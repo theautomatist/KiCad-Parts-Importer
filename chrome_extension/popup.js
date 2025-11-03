@@ -1,1252 +1,1449 @@
 "use strict";
 
+function createSimpleBootstrap(scope) {
+  const doc = scope.document;
+  let activeModalCount = 0;
+
+  class SimpleModal {
+    constructor(element) {
+      this.element = element;
+      this.visible = false;
+      this.backdrop = null;
+      this._handleDismiss = (event) => {
+        const trigger = event.target.closest('[data-bs-dismiss="modal"]');
+        if (trigger) {
+          event.preventDefault();
+          this.hide();
+        }
+      };
+      this._handleKeydown = (event) => {
+        if (event.key === "Escape") {
+          this.hide();
+        }
+      };
+      this._maybeDismiss = false;
+      this.element.addEventListener("click", this._handleDismiss);
+      this.element.addEventListener("mousedown", (event) => {
+        this._maybeDismiss = event.target === this.element;
+      });
+      this.element.addEventListener("mouseup", (event) => {
+        if (this._maybeDismiss && event.target === this.element) {
+          this.hide();
+        }
+        this._maybeDismiss = false;
+      });
+    }
+
+    show() {
+      if (this.visible) return;
+      this.visible = true;
+      activeModalCount += 1;
+      doc.body.classList.add("modal-open");
+      this._createBackdrop();
+      this.element.style.display = "block";
+      this.element.removeAttribute("aria-hidden");
+      this.element.classList.add("show");
+      doc.addEventListener("keydown", this._handleKeydown);
+      this.element.dispatchEvent(new CustomEvent("shown.bs.modal", { bubbles: true }));
+    }
+
+    hide() {
+      if (!this.visible) return;
+      this.visible = false;
+      activeModalCount = Math.max(0, activeModalCount - 1);
+      if (activeModalCount === 0) {
+        doc.body.classList.remove("modal-open");
+      }
+      this.element.classList.remove("show");
+      this.element.setAttribute("aria-hidden", "true");
+      this.element.style.display = "none";
+      doc.removeEventListener("keydown", this._handleKeydown);
+      this._removeBackdrop();
+      this.element.dispatchEvent(new CustomEvent("hidden.bs.modal", { bubbles: true }));
+    }
+
+    _createBackdrop() {
+      if (this.backdrop) return;
+      const backdrop = doc.createElement("div");
+      backdrop.className = "modal-backdrop fade show";
+      doc.body.appendChild(backdrop);
+      this.backdrop = backdrop;
+    }
+
+    _removeBackdrop() {
+      if (this.backdrop && this.backdrop.parentNode) {
+        this.backdrop.parentNode.removeChild(this.backdrop);
+      }
+      this.backdrop = null;
+    }
+  }
+
+  class SimpleToast {
+    constructor(element, options = {}) {
+      this.element = element;
+      this.delay = typeof options.delay === "number" ? options.delay : 5000;
+      this.timer = null;
+      this._handleDismiss = (event) => {
+        const trigger = event.target.closest('[data-bs-dismiss="toast"]');
+        if (trigger) {
+          event.preventDefault();
+          this.hide();
+        }
+      };
+      this.element.addEventListener("click", this._handleDismiss);
+    }
+
+    show() {
+      clearTimeout(this.timer);
+      this.element.classList.add("show");
+      this.element.classList.remove("hide");
+      this.element.style.display = "block";
+      this.element.setAttribute("aria-hidden", "false");
+      if (this.delay > 0) {
+        this.timer = setTimeout(() => this.hide(), this.delay);
+      }
+    }
+
+    hide() {
+      clearTimeout(this.timer);
+      this.element.classList.remove("show");
+      this.element.style.display = "none";
+      this.element.setAttribute("aria-hidden", "true");
+      this.element.dispatchEvent(new CustomEvent("hidden.bs.toast", { bubbles: true }));
+    }
+  }
+
+  class SimpleTab {
+    constructor(element) {
+      this.element = element;
+    }
+
+    show() {
+      const selector = this.element.getAttribute("data-bs-target") || this.element.getAttribute("href");
+      if (!selector) return;
+      const target = doc.querySelector(selector);
+      if (!target) return;
+
+      const nav = this.element.closest("[role=\"tablist\"]");
+      if (nav) {
+        nav.querySelectorAll(".nav-link").forEach((btn) => {
+          if (btn !== this.element) {
+            btn.classList.remove("active");
+            btn.setAttribute("aria-selected", "false");
+          }
+        });
+      }
+
+      this.element.classList.add("active");
+      this.element.setAttribute("aria-selected", "true");
+
+      const container = target.parentElement;
+      if (container) {
+        Array.from(container.children).forEach((pane) => {
+          if (pane !== target) {
+            pane.classList.remove("show", "active");
+          }
+        });
+      }
+      target.classList.add("show", "active");
+      this.element.dispatchEvent(new CustomEvent("shown.bs.tab", { bubbles: true }));
+    }
+  }
+
+  return { Modal: SimpleModal, Toast: SimpleToast, Tab: SimpleTab };
+}
+
+const globalScope = typeof window !== "undefined" ? window : globalThis;
+const bootstrap = globalScope.bootstrap || (globalScope.bootstrap = createSimpleBootstrap(globalScope));
+
+const UI_STORAGE_KEY = "popupUiState";
+const TAB_IDS = ["parts", "libraries", "settings"];
+
 const state = {
+  activeTab: "parts",
   connected: false,
-  serverUrl: "http://localhost:8087",
-  defaultLibraryPath: "",
-  defaultLibraryName: "",
+  libraries: [],
+  libraryTotals: { symbols: 0, footprints: 0, models: 0 },
+  libraryFilter: "",
   selectedLibraryPath: "",
   selectedLibraryName: "",
-  overwriteFootprints: false,
-  overwriteModels: false,
-  debugLogs: false,
-  jobs: [],
-  jobHistory: [],
-  jobsLoading: false,
-  historyLoading: false,
-  historyFilter: "all",
-  historySearchTerm: "",
-  historyVisibleCount: 10,
-  historyPageSize: 10,
+  jobs: {},
+  history: [],
+  settings: {
+    serverUrl: "http://localhost:8087",
+    overwrite: false,
+    overwriteModel: false,
+    debug: false,
+    projectRelative: false,
+  },
+  lastJob: null,
+  ready: false,
+  picker: {
+    mode: null,
+    callback: null,
+    roots: [],
+    currentPath: "",
+    selectedPath: "",
+    parentPath: "",
+    selectedType: "",
+    filterExtension: null,
+    requireFile: false,
+    breadcrumbs: [],
+  },
 };
 
 const elements = {};
+const modals = {};
+let pickerManualTimer = null;
 
-let pathRoots = [];
-let currentDirectory = null;
-let currentEntries = [];
-let selectedEntryIndex = -1;
-let historySearchTimeout = null;
-let settingsSaveTimeout = null;
-let settingsFeedbackTimeout = null;
-const pathHistory = [];
-let lastTrackedHistorySearch = "";
-let lastPathInfoChecked = null;
+document.addEventListener("DOMContentLoaded", init);
 
-const SETTINGS_SAVE_DEBOUNCE_MS = 400;
-const SETTINGS_FEEDBACK_CLEAR_MS = 1500;
-
-function $(selector) {
-  return document.querySelector(selector);
+async function init() {
+  cacheElements();
+  initModals();
+  bindEvents();
+  await loadUiPreferences();
+  await hydrate();
+  chrome.runtime.onMessage.addListener(handleRuntimeMessage);
 }
 
-function logDebug(message, ...args) {
-  if (!state.debugLogs) {
-    return;
+function cacheElements() {
+  elements.tabButtons = Array.from(document.querySelectorAll(".tab-button"));
+  elements.panels = TAB_IDS.reduce((acc, id) => {
+    acc[id] = document.getElementById(`tab-panel-${id}`);
+    return acc;
+  }, {});
+  elements.connectionStatus = document.getElementById("connection-status");
+  elements.headerActive = document.getElementById("header-active");
+  elements.toastContainer = document.getElementById("toast-container");
+
+  // Parts tab
+  elements.partsForm = document.getElementById("parts-form");
+  elements.partsLcsc = document.getElementById("parts-lcsc");
+  elements.partsSubmit = document.getElementById("parts-submit");
+  elements.partsSymbol = document.getElementById("parts-symbol");
+  elements.partsFootprint = document.getElementById("parts-footprint");
+  elements.partsModel = document.getElementById("parts-model");
+  elements.partsOverwrite = document.getElementById("parts-overwrite");
+  elements.partsOverwriteModel = document.getElementById("parts-overwrite-model");
+  elements.partsProjectRelative = document.getElementById("parts-project-relative");
+  elements.partsFeedback = document.getElementById("parts-feedback");
+  elements.partsResult = document.getElementById("parts-result");
+  elements.partsResultDetails = document.getElementById("parts-result-details");
+  elements.partsOpenLibrary = document.getElementById("parts-open-library");
+
+  // Libraries tab
+  elements.libraryList = document.getElementById("library-list");
+  elements.libraryEmpty = document.getElementById("library-empty");
+  elements.libraryAdd = document.getElementById("library-add");
+  elements.libraryModal = document.getElementById("library-modal");
+  elements.libraryModalTabs = document.getElementById("library-modal-tabs");
+  elements.libraryModalSubmit = document.getElementById("library-modal-submit");
+  elements.libraryModalError = document.getElementById("library-modal-error");
+  elements.libraryImportForm = document.getElementById("library-import-form");
+  elements.libraryImportPath = document.getElementById("library-import-path");
+  elements.libraryImportInfo = document.getElementById("library-import-info");
+  elements.librarySummary = document.getElementById("library-summary");
+  elements.librarySearch = document.getElementById("library-search");
+  elements.libraryCreateForm = document.getElementById("library-create-form");
+  elements.libraryCreateName = document.getElementById("library-create-name");
+  elements.libraryCreatePath = document.getElementById("library-create-path");
+  elements.libraryCreateSymbol = document.getElementById("library-create-symbol");
+  elements.libraryCreateFootprint = document.getElementById("library-create-footprint");
+  elements.libraryCreateModel = document.getElementById("library-create-model");
+  elements.libraryCreateProject = document.getElementById("library-create-project");
+
+  // Settings
+  elements.settingsForm = document.getElementById("settings-form");
+  elements.settingsServer = document.getElementById("settings-server");
+  elements.settingsTest = document.getElementById("settings-test");
+  elements.settingsOverwrite = document.getElementById("settings-overwrite");
+  elements.settingsOverwriteModel = document.getElementById("settings-overwrite-model");
+  elements.settingsDebug = document.getElementById("settings-debug");
+  elements.settingsProjectRelative = document.getElementById("settings-project-relative");
+  elements.settingsFeedback = document.getElementById("settings-feedback");
+
+  // Modals shared
+  elements.libraryRequiredModal = document.getElementById("library-required-modal");
+  elements.pickerModal = document.getElementById("picker-modal");
+  elements.pickerManual = document.getElementById("picker-manual");
+  elements.pickerPathBreadcrumb = document.getElementById("picker-path-breadcrumb");
+  elements.pickerList = document.getElementById("picker-list");
+  elements.pickerError = document.getElementById("picker-error");
+  elements.pickerApply = document.getElementById("picker-apply");
+}
+
+function initModals() {
+  modals.libraryRequired = elements.libraryRequiredModal ? new bootstrap.Modal(elements.libraryRequiredModal) : null;
+  modals.library = elements.libraryModal ? new bootstrap.Modal(elements.libraryModal) : null;
+  modals.picker = elements.pickerModal ? new bootstrap.Modal(elements.pickerModal) : null;
+
+  if (elements.libraryModal) {
+    elements.libraryModal.addEventListener("hidden.bs.modal", () => {
+      clearLibraryModalError();
+      elements.libraryImportForm?.reset();
+      elements.libraryCreateForm?.reset();
+      elements.libraryImportInfo.textContent = "";
+      elements.libraryImportInfo.className = "form-text";
+    });
   }
-  console.debug(`[popup] ${message}`, ...args);
-}
-
-function trackEvent(name, detail = {}) {
-  const payload = {
-    event: name,
-    detail,
-    timestamp: new Date().toISOString(),
-  };
-  console.info("[ui-event]", payload);
-}
-
-function resetCollection(container, selector) {
-  if (!container) {
-    return;
-  }
-  container.querySelectorAll(selector).forEach((node) => node.remove());
-}
-
-async function sendMessage(type, payload = {}) {
-  const response = await chrome.runtime.sendMessage({ type, ...payload });
-  if (!response?.ok) {
-    throw new Error(response?.error || "Unbekannter Fehler");
-  }
-  return response.data;
-}
-
-function initElements() {
-  elements.status = $("#connection-status");
-  elements.statusLabel = elements.status?.querySelector(".status-label");
-  elements.tabs = document.querySelectorAll(".tab-button");
-  elements.tabContents = document.querySelectorAll(".tab-content");
-  elements.lcscId = $("#lcsc-id");
-  elements.libraryName = $("#library-name");
-  elements.selectedPath = $("#selected-path");
-  elements.openPathBrowser = $("#open-path-browser");
-  elements.pathBrowser = $("#path-browser");
-  elements.pathEntries = $("#path-entries");
-  elements.pathBreadcrumb = $("#path-breadcrumb");
-  elements.pathManual = $("#path-manual");
-  elements.pathGo = $("#path-go");
-  elements.pathApply = $("#path-apply");
-  elements.pathBack = $("#path-back");
-  elements.pathInfo = $("#path-info");
-  elements.pathError = $("#path-error");
-  elements.generateSymbol = $("#generate-symbol");
-  elements.generateFootprint = $("#generate-footprint");
-  elements.generateModel = $("#generate-model");
-  elements.overwriteExisting = $("#overwrite-existing");
-  elements.jobError = $("#job-error");
-  elements.jobSuccess = $("#job-success");
-  elements.jobForm = $("#job-form");
-  elements.historyList = $("#history-list");
-  elements.clearHistory = $("#clear-history");
-  elements.historySearch = $("#history-search");
-  elements.historyClearSearch = $("#history-clear-search");
-  elements.historyFilter = $("#history-filter");
-  elements.historyLoadMore = $("#history-load-more");
-  elements.settingServerUrl = $("#setting-server-url");
-  elements.settingDefaultPath = $("#setting-default-path");
-  elements.settingDefaultName = $("#setting-default-name");
-  elements.settingOverwriteFootprints = $("#setting-overwrite-footprints");
-  elements.settingOverwriteModels = $("#setting-overwrite-models");
-  elements.settingDebugLogs = $("#setting-debug-logs");
-  elements.settingUseSelected = $("#setting-use-selected");
-  elements.settingsFeedback = $("#settings-feedback");
-  elements.jobSkip = $("#job-skip");
-  elements.jobReset = $("#job-reset");
 }
 
 function bindEvents() {
-  elements.tabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
-      switchTab(tab.dataset.tab);
-      trackEvent("tab_changed", { tab: tab.dataset.tab });
-    });
+  elements.tabButtons.forEach((button) => {
+    button.addEventListener("click", () => setActiveTab(button.dataset.tab));
   });
 
-  elements.openPathBrowser?.addEventListener("click", () => {
-    trackEvent("cta_clicked", { id: "open_path_browser" });
-    togglePathBrowser(true);
-  });
-  elements.pathBack?.addEventListener("click", () => {
-    togglePathBrowser(false);
-    trackEvent("cta_clicked", { id: "path_back_close" });
-  });
-  elements.pathApply?.addEventListener("click", () => {
-    applyCurrentPath();
-    trackEvent("cta_clicked", { id: "path_apply" });
-  });
-  elements.pathGo?.addEventListener("click", () => {
-    handleManualPath();
-    trackEvent("cta_clicked", { id: "path_go" });
-  });
-  elements.pathManual?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      handleManualPath();
-      trackEvent("search_submitted", { scope: "path_browser", input: elements.pathManual.value.trim() });
+  elements.partsOpenLibrary?.addEventListener("click", () => {
+    if (modals.library) {
+      modals.library.show();
+      setLibraryModalTab("import");
+    } else {
+      setActiveTab("libraries");
     }
   });
 
-  elements.pathEntries?.addEventListener("keydown", handlePathListKeydown);
-  elements.pathEntries?.addEventListener(
-    "focus",
-    () => {
-      if (!currentEntries.length) {
-        return;
-      }
-      if (selectedEntryIndex < 0) {
-        setSelectedEntry(0, true);
-      } else {
-        setSelectedEntry(selectedEntryIndex, true);
-      }
-    },
-    true,
-  );
+  elements.partsForm?.addEventListener("submit", handlePartsSubmit);
+  elements.partsLcsc?.addEventListener("blur", () => {
+    elements.partsLcsc.value = elements.partsLcsc.value.trim().toUpperCase();
+  });
 
-  elements.jobSkip?.addEventListener("click", () => {
-    applyDefaultPath();
-    trackEvent("cta_clicked", { id: "job_skip_to_defaults" });
+  const pickerButtons = document.querySelectorAll("[data-picker]");
+  pickerButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.picker;
+      openDirectoryPicker({
+        mode,
+        applyLabel: mode === "import" ? "Import library" : "Use this folder",
+        initialPath: mode === "import" ? elements.libraryImportPath.value : elements.libraryCreatePath.value,
+        onSelect: (selectedPath) => {
+          if (mode === "import") {
+            elements.libraryImportPath.value = selectedPath;
+            validateImportPath(selectedPath);
+          } else {
+            elements.libraryCreatePath.value = selectedPath;
+          }
+        },
+      });
+    });
   });
-  elements.jobReset?.addEventListener("click", () => {
-    resetJobForm();
-    trackEvent("cta_clicked", { id: "job_reset" });
+
+  elements.libraryAdd?.addEventListener("click", () => {
+    setLibraryModalTab("import");
+    modals.library?.show();
   });
-  elements.submitJob = $("#submit-job");
-  elements.submitJob?.addEventListener("click", (event) => {
+  elements.librarySearch?.addEventListener("input", handleLibrarySearch);
+
+  elements.libraryModalTabs?.addEventListener("shown.bs.tab", clearLibraryModalError);
+  elements.libraryModalTabs?.addEventListener("click", (event) => {
+    const trigger = event.target.closest('[data-bs-toggle="pill"]');
+    if (!trigger) return;
     event.preventDefault();
-    handleJobSubmit(event);
+    const tab = new bootstrap.Tab(trigger);
+    tab.show();
   });
+  elements.libraryModalSubmit?.addEventListener("click", handleLibraryModalSubmit);
 
-  elements.historySearch?.addEventListener("input", handleHistorySearchInput);
-  elements.historySearch?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      state.historyVisibleCount = state.historyPageSize;
-      finalizeHistorySearch(true);
+  elements.libraryList?.addEventListener("change", handleLibraryListChange);
+  elements.libraryList?.addEventListener("click", handleLibraryListClick);
+
+  elements.settingsForm?.addEventListener("change", debounce(handleSettingsChange, 250));
+  elements.settingsTest?.addEventListener("click", testServerConnection);
+
+  elements.pickerManual?.addEventListener("input", handlePickerManualInput);
+  elements.pickerManual?.addEventListener("change", handlePickerManualChange);
+  elements.pickerManual?.addEventListener("keydown", handlePickerManualKeydown);
+
+  elements.pickerApply?.addEventListener("click", applyPickerSelection);
+
+  elements.pickerList?.addEventListener("click", handlePickerListClick);
+  elements.pickerList?.addEventListener("dblclick", handlePickerListDoubleClick);
+  elements.pickerList?.addEventListener("keydown", handlePickerListKeydown);
+
+  elements.libraryRequiredModal?.addEventListener("click", (event) => {
+    const target = event.target.closest("[data-focus-tab]");
+    if (target) {
+      const tab = target.dataset.focusTab;
+      if (tab) {
+        requestAnimationFrame(() => setActiveTab(tab));
+      }
     }
   });
-  elements.historyClearSearch?.addEventListener("click", () => {
-    elements.historySearch.value = "";
-    state.historySearchTerm = "";
-    state.historyVisibleCount = state.historyPageSize;
-    finalizeHistorySearch(true);
-    trackEvent("cta_clicked", { id: "history_search_clear" });
-  });
-  elements.historyFilter?.addEventListener("change", (event) => {
-    state.historyFilter = event.target.value || "all";
-    state.historyVisibleCount = state.historyPageSize;
-    trackEvent("filter_applied", { scope: "history", filter: state.historyFilter });
-    renderHistory();
-  });
-  elements.historyLoadMore?.addEventListener("click", () => {
-    state.historyVisibleCount += state.historyPageSize;
-    trackEvent("cta_clicked", {
-      id: "history_load_more",
-      visibleCount: state.historyVisibleCount,
-    });
-    renderHistory();
-  });
-
-  elements.clearHistory?.addEventListener("click", handleClearHistory);
-
-  elements.settingUseSelected?.addEventListener("click", () => {
-    if (state.selectedLibraryPath) {
-      elements.settingDefaultPath.value = state.selectedLibraryPath;
-      trackEvent("cta_clicked", { id: "settings_use_selected_path" });
-      scheduleSettingsUpdate();
-    }
-  });
-  elements.settingServerUrl?.addEventListener("input", handleSettingsFieldChange);
-  elements.settingDefaultPath?.addEventListener("input", handleSettingsFieldChange);
-  elements.settingDefaultName?.addEventListener("input", handleSettingsFieldChange);
-  elements.settingOverwriteFootprints?.addEventListener("change", handleSettingsFieldChange);
-  elements.settingOverwriteModels?.addEventListener("change", handleSettingsFieldChange);
-  elements.settingDebugLogs?.addEventListener("change", handleSettingsFieldChange);
 }
 
-function resetJobForm() {
-  if (!elements.jobForm) {
-    return;
-  }
-  elements.lcscId.value = "";
-  elements.jobError.textContent = "";
-  elements.jobSuccess.textContent = "";
-  elements.generateSymbol.checked = true;
-  elements.generateFootprint.checked = false;
-  elements.generateModel.checked = false;
-  elements.overwriteExisting.checked = false;
-  if (!state.selectedLibraryName && elements.libraryName) {
-    elements.libraryName.value = state.defaultLibraryName || "";
-  }
-}
-
-function applyDefaultPath() {
-  const basePath = state.selectedLibraryPath || state.defaultLibraryPath || "";
-  if (!basePath) {
-    elements.jobError.textContent = "Bitte Standardpfad in den Einstellungen hinterlegen.";
-    return;
-  }
-  state.selectedLibraryPath = basePath;
-  if (elements.selectedPath) {
-    elements.selectedPath.value = basePath;
-  }
-  elements.jobError.textContent = "";
-  elements.jobSuccess.textContent = "Standardpfad übernommen.";
-  lastPathInfoChecked = null;
-  updatePathInfo(basePath);
-}
-
-function handleHistorySearchInput(event) {
-  state.historySearchTerm = event.target.value || "";
-  state.historyVisibleCount = state.historyPageSize;
-  if (historySearchTimeout) {
-    clearTimeout(historySearchTimeout);
-  }
-  historySearchTimeout = setTimeout(() => finalizeHistorySearch(false), 300);
-  renderHistory();
-}
-
-function finalizeHistorySearch(forceTrack) {
-  if (historySearchTimeout) {
-    clearTimeout(historySearchTimeout);
-    historySearchTimeout = null;
-  }
-  const term = state.historySearchTerm.trim();
-  if (forceTrack || term !== lastTrackedHistorySearch) {
-    trackEvent("search_submitted", {
-      scope: "history",
-      query: term,
-    });
-    lastTrackedHistorySearch = term;
-  }
-  renderHistory();
-}
-
-function handleSettingsFieldChange() {
-  scheduleSettingsUpdate();
-}
-
-function scheduleSettingsUpdate() {
-  if (!elements.settingsFeedback) {
-    return;
-  }
-  if (settingsSaveTimeout) {
-    clearTimeout(settingsSaveTimeout);
-  }
-  if (settingsFeedbackTimeout) {
-    clearTimeout(settingsFeedbackTimeout);
-    settingsFeedbackTimeout = null;
-  }
-  setSettingsFeedback("Speichern …", "success");
-  settingsSaveTimeout = setTimeout(applySettingsUpdate, SETTINGS_SAVE_DEBOUNCE_MS);
-}
-
-function setSettingsFeedback(message, type = "success") {
-  if (!elements.settingsFeedback) {
-    return;
-  }
-  const el = elements.settingsFeedback;
-  el.textContent = message || "";
-  el.classList.remove("feedback-error", "feedback-success");
-  if (!message) {
-    return;
-  }
-  if (type === "error") {
-    el.classList.add("feedback-error");
-  } else {
-    el.classList.add("feedback-success");
-  }
-}
-
-function collectSettingsPayload() {
-  const serverUrlInput = elements.settingServerUrl?.value ?? "";
-  const defaultPathInput = elements.settingDefaultPath?.value ?? "";
-  const defaultNameInput = elements.settingDefaultName?.value ?? "";
-
-  return {
-    serverUrl: serverUrlInput.trim(),
-    defaultLibraryPath: defaultPathInput.trim(),
-    defaultLibraryName: defaultNameInput.trim(),
-    overwriteFootprints: Boolean(elements.settingOverwriteFootprints?.checked),
-    overwriteModels: Boolean(elements.settingOverwriteModels?.checked),
-    debugLogs: Boolean(elements.settingDebugLogs?.checked),
-  };
-}
-
-async function applySettingsUpdate() {
-  settingsSaveTimeout = null;
+async function loadUiPreferences() {
   try {
-    const payload = collectSettingsPayload();
-    const snapshot = await sendMessage("updateSettings", payload);
+    const stored = await chrome.storage.local.get(UI_STORAGE_KEY);
+    const data = stored?.[UI_STORAGE_KEY];
+    if (data && typeof data === "object" && TAB_IDS.includes(data.activeTab)) {
+      state.activeTab = data.activeTab;
+    }
+    if (data && typeof data.projectRelative === "boolean") {
+      state.settings.projectRelative = data.projectRelative;
+    }
+  } catch (error) {
+    console.warn("Failed to read UI preferences", error);
+  }
+  setActiveTab(state.activeTab, { silent: true });
+}
+
+async function saveUiPreferences() {
+  try {
+    await chrome.storage.local.set({
+      [UI_STORAGE_KEY]: {
+        activeTab: state.activeTab,
+        projectRelative: state.settings.projectRelative,
+      },
+    });
+  } catch (error) {
+    console.warn("Failed to persist UI preferences", error);
+  }
+}
+
+async function hydrate() {
+  try {
+    const snapshot = await sendMessage("getState");
     applyState(snapshot);
-    setSettingsFeedback("Gespeichert.", "success");
-    settingsFeedbackTimeout = setTimeout(() => {
-      setSettingsFeedback("");
-      settingsFeedbackTimeout = null;
-    }, SETTINGS_FEEDBACK_CLEAR_MS);
   } catch (error) {
-    const message = error?.message || "Speichern fehlgeschlagen.";
-    setSettingsFeedback(message, "error");
-    if (settingsFeedbackTimeout) {
-      clearTimeout(settingsFeedbackTimeout);
-      settingsFeedbackTimeout = null;
-    }
+    console.error("Failed to load state", error);
+    showToast(error.message || "Failed to load state", "danger");
   }
 }
 
-function updatePathNavState() {
-  if (elements.pathBack) {
-    elements.pathBack.disabled = false;
+function handleRuntimeMessage(message) {
+  if (message?.type === "stateUpdate") {
+    applyState(message.state);
   }
 }
 
-function switchTab(tabId) {
-  elements.tabs.forEach((tab) => {
-    const isActive = tab.dataset.tab === tabId;
-    tab.classList.toggle("active", isActive);
-    tab.setAttribute("aria-pressed", String(isActive));
-  });
-  elements.tabContents.forEach((content) => {
-    const isActive = content.id === `tab-${tabId}`;
-    content.classList.toggle("active", isActive);
-    content.setAttribute("aria-hidden", String(!isActive));
-  });
-}
+function applyState(snapshot = {}) {
+  state.connected = Boolean(snapshot.connected);
+  state.libraries = Array.isArray(snapshot.libraries)
+    ? snapshot.libraries.map((item) => ({
+        ...item,
+        counts: {
+          symbol: Number(item?.counts?.symbol) || 0,
+          footprint: Number(item?.counts?.footprint) || 0,
+          model: Number(item?.counts?.model) || 0,
+        },
+      }))
+    : [];
+  state.libraryTotals = {
+    symbols: Number(snapshot.libraryTotals?.symbols) || 0,
+    footprints: Number(snapshot.libraryTotals?.footprints) || 0,
+    models: Number(snapshot.libraryTotals?.models) || 0,
+  };
+  state.selectedLibraryPath = typeof snapshot.selectedLibraryPath === "string" ? snapshot.selectedLibraryPath : "";
+  state.selectedLibraryName = typeof snapshot.selectedLibraryName === "string" ? snapshot.selectedLibraryName : "";
+  state.jobs = snapshot.jobs && typeof snapshot.jobs === "object" ? { ...snapshot.jobs } : {};
+  state.history = Array.isArray(snapshot.jobHistory) ? snapshot.jobHistory.slice() : [];
+  state.lastJob = state.history[0] || null;
 
-function togglePathBrowser(show) {
-  if (show) {
-    elements.pathBrowser.classList.remove("hidden");
-    elements.pathBrowser.setAttribute("aria-hidden", "false");
-    elements.jobForm?.classList.add("collapsed");
-    elements.pathManual.value = state.selectedLibraryPath || state.defaultLibraryPath || "";
-    pathHistory.length = 0;
-    if (elements.pathEntries) {
-      elements.pathEntries.dataset.currentPath = "";
-      elements.pathEntries.scrollTop = 0;
-    }
-    updatePathNavState();
-    loadRoots();
-  } else {
-    elements.pathBrowser.classList.add("hidden");
-    elements.pathBrowser.setAttribute("aria-hidden", "true");
-    elements.jobForm?.classList.remove("collapsed");
-    pathHistory.length = 0;
-    if (elements.pathEntries) {
-      elements.pathEntries.dataset.currentPath = "";
-      elements.pathEntries.scrollTop = 0;
-    }
-    updatePathNavState();
+  const serverUrl = typeof snapshot.serverUrl === "string" && snapshot.serverUrl.trim().length
+    ? snapshot.serverUrl.trim()
+    : state.settings.serverUrl;
+
+  state.settings.serverUrl = serverUrl;
+  state.settings.overwrite = Boolean(snapshot.overwriteFootprints);
+  state.settings.overwriteModel = Boolean(snapshot.overwriteModels);
+  state.settings.debug = Boolean(snapshot.debugLogs);
+
+  if (typeof snapshot.projectRelative === "boolean") {
+    state.settings.projectRelative = snapshot.projectRelative;
   }
+
+  renderConnectionStatus();
+  renderPartsDefaults();
+  renderLibraries();
+  renderPartsResult();
+  renderSettings();
+
+  state.ready = true;
 }
 
-async function loadRoots() {
-  try {
-    const data = await sendMessage("fs:listRoots");
-    pathRoots = data || [];
-    updatePathNavState();
-
-    const manualPath = elements.pathManual.value.trim();
-    if (manualPath) {
-      loadDirectory(manualPath, { pushHistory: false });
-    } else if (pathRoots.length > 0) {
-      loadDirectory(pathRoots[0].path, { pushHistory: false });
-    }
-  } catch (error) {
-    elements.pathError.textContent = error.message;
-    updatePathNavState();
-  }
+function renderConnectionStatus() {
+  if (!elements.connectionStatus) return;
+  const label = state.connected ? "ON" : "OFF";
+  elements.connectionStatus.textContent = label;
+  elements.connectionStatus.classList.toggle("badge-online", state.connected);
+  elements.connectionStatus.classList.toggle("badge-offline", !state.connected);
 }
 
-async function handleManualPath() {
-  const manualPath = elements.pathManual.value.trim();
-  if (!manualPath) {
-    elements.pathError.textContent = "Pfad eingeben.";
+function renderPartsDefaults() {
+  if (!state.ready) {
+    elements.partsOverwrite.checked = state.settings.overwrite;
+    elements.partsOverwriteModel.checked = state.settings.overwriteModel;
+    elements.partsProjectRelative.checked = state.settings.projectRelative;
     return;
   }
-  elements.pathError.textContent = "";
-  await loadDirectory(manualPath);
+
+  if (elements.partsOverwrite && !elements.partsOverwrite.matches(":focus")) {
+    elements.partsOverwrite.checked = state.settings.overwrite;
+  }
+  if (elements.partsOverwriteModel && !elements.partsOverwriteModel.matches(":focus")) {
+    elements.partsOverwriteModel.checked = state.settings.overwriteModel;
+  }
+  if (elements.partsProjectRelative && !elements.partsProjectRelative.matches(":focus")) {
+    elements.partsProjectRelative.checked = state.settings.projectRelative;
+  }
 }
 
-function createBreadcrumbSegments(path) {
-  if (!path) {
-    return [];
+function renderLibraries() {
+  if (!elements.libraryList) return;
+
+  elements.libraryList.innerHTML = "";
+  const sortedLibraries = state.libraries
+    .slice()
+    .sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }));
+  const totalLibraries = sortedLibraries.length;
+
+  if (elements.librarySearch && elements.librarySearch.value !== state.libraryFilter) {
+    elements.librarySearch.value = state.libraryFilter;
   }
 
-  const segments = [];
-  const windowsDrive = path.match(/^[A-Za-z]:/);
-
-  if (windowsDrive) {
-    const drive = `${windowsDrive[0].toUpperCase()}:`;
-    let current = `${windowsDrive[0]}\\`;
-    segments.push({ label: drive, path: current });
-    const remainder = path.slice(current.length).replace(/^[\\/]+/, "");
-    if (!remainder) {
-      return segments;
-    }
-    remainder.split(/[\\/]+/).filter(Boolean).forEach((part) => {
-      current = current.endsWith("\\") ? `${current}${part}` : `${current}\\${part}`;
-      segments.push({ label: part, path: current });
+  const query = state.libraryFilter.trim().toLowerCase();
+  let libraries = sortedLibraries;
+  if (query) {
+    libraries = sortedLibraries.filter((library) => {
+      const name = (library.name || "").toLowerCase();
+      const symbolPath = (library.symbolPath || "").toLowerCase();
+      const basePath = (library.path || library.resolvedPrefix || "").toLowerCase();
+      return name.includes(query) || symbolPath.includes(query) || basePath.includes(query);
     });
-    return segments;
   }
 
-  if (path.startsWith("/")) {
-    let current = "/";
-    segments.push({ label: "/", path: current });
-    const parts = path.split("/").filter(Boolean);
-    parts.forEach((part) => {
-      current = current === "/" ? `/${part}` : `${current}/${part}`;
-      segments.push({ label: part, path: current });
-    });
-    return segments;
-  }
+  const visibleCount = libraries.length;
 
-  let current = "";
-  path.split(/[\\/]+/)
-    .filter(Boolean)
-    .forEach((part, index) => {
-      current = index === 0 ? part : `${current}/${part}`;
-      segments.push({ label: part, path: current });
-    });
-  return segments;
-}
-
-function renderBreadcrumb(path) {
-  if (!elements.pathBreadcrumb) {
-    return;
-  }
-  const container = elements.pathBreadcrumb;
-  container.innerHTML = "";
-  const segments = createBreadcrumbSegments(path);
-  if (!segments.length) {
-    container.textContent = path || "";
-    return;
-  }
-  segments.forEach((segment, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "breadcrumb-item";
-    button.textContent = segment.label;
-    button.dataset.path = segment.path;
-    const isCurrent = index === segments.length - 1;
-
-    const navigateToSegment = () => {
-      if (isCurrent) {
-        return;
-      }
-      loadDirectory(segment.path, { pushHistory: true });
-      trackEvent("cta_clicked", { id: "path_breadcrumb", target: segment.path });
-    };
-    button.addEventListener("click", navigateToSegment);
-    button.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        navigateToSegment();
-      }
-    });
-    button.disabled = isCurrent;
-    if (isCurrent) {
-      button.classList.add("active");
-    }
-    container.appendChild(button);
-    if (index < segments.length - 1) {
-      const separator = document.createElement("span");
-      separator.className = "breadcrumb-separator";
-      separator.textContent = "›";
-      container.appendChild(separator);
-    }
-  });
-}
-
-function setSelectedEntry(index, focus = false) {
-  const items = elements.pathEntries.querySelectorAll("li");
-  if (index < 0 || index >= items.length) {
-    selectedEntryIndex = -1;
-    items.forEach((item) => item.setAttribute("aria-selected", "false"));
-    return;
-  }
-  selectedEntryIndex = index;
-  items.forEach((item, itemIndex) => {
-    const isSelected = itemIndex === index;
-    item.setAttribute("aria-selected", isSelected ? "true" : "false");
-    if (isSelected && focus) {
-      if (typeof item.focus === "function") {
-        try {
-          item.focus({ preventScroll: true });
-        } catch (error) {
-          item.focus();
-        }
-      }
-    }
-  });
-}
-
-function renderDirectoryEntries(entries, preserveScroll = false) {
-  const list = Array.isArray(entries) ? entries : [];
-  currentEntries = list.filter((entry) => entry.is_dir);
-  const previousScrollTop = preserveScroll ? elements.pathEntries.scrollTop : 0;
-  elements.pathEntries.innerHTML = "";
-
-  if (!currentEntries.length) {
-    const empty = document.createElement("li");
-    empty.textContent = "Keine Unterordner";
-    empty.className = "path-empty";
-    empty.setAttribute("aria-disabled", "true");
-    empty.tabIndex = -1;
-    elements.pathEntries.appendChild(empty);
-    selectedEntryIndex = -1;
-    return;
-  }
-
-  currentEntries.forEach((entry, index) => {
-    const li = document.createElement("li");
-    li.dataset.index = String(index);
-    li.dataset.path = entry.path;
-    li.tabIndex = 0;
-
-    const icon = document.createElement("span");
-    icon.className = "entry-icon";
-    icon.textContent = "📁";
-
-    const label = document.createElement("span");
-    label.textContent = entry.name;
-
-    li.appendChild(icon);
-    li.appendChild(label);
-
-    li.addEventListener("click", () => {
-      setSelectedEntry(index, true);
-    });
-
-    li.addEventListener("dblclick", () => {
-      loadDirectory(entry.path);
-    });
-
-    li.addEventListener("focus", () => {
-      if (selectedEntryIndex !== index) {
-        setSelectedEntry(index);
-      }
-    });
-
-    elements.pathEntries.appendChild(li);
-  });
-
-  if (selectedEntryIndex < 0) {
-    selectedEntryIndex = 0;
-  }
-  selectedEntryIndex = Math.min(selectedEntryIndex, currentEntries.length - 1);
-  if (preserveScroll) {
-    elements.pathEntries.scrollTop = previousScrollTop;
-  } else {
-    elements.pathEntries.scrollTop = 0;
-  }
-  setSelectedEntry(selectedEntryIndex, true);
-}
-
-function openSelectedEntry() {
-  if (selectedEntryIndex < 0 || !currentEntries[selectedEntryIndex]) {
-    return;
-  }
-  loadDirectory(currentEntries[selectedEntryIndex].path);
-}
-
-function handlePathListKeydown(event) {
-  if (!currentEntries.length) {
-    if (event.key === "Backspace") {
-      event.preventDefault();
-      if (currentDirectory?.parent) {
-        loadDirectory(currentDirectory.parent);
-      }
-    }
-    return;
-  }
-
-  switch (event.key) {
-    case "ArrowDown":
-      event.preventDefault();
-      if (selectedEntryIndex < currentEntries.length - 1) {
-        setSelectedEntry(selectedEntryIndex + 1, true);
-      }
-      break;
-    case "ArrowUp":
-      event.preventDefault();
-      if (selectedEntryIndex > 0) {
-        setSelectedEntry(selectedEntryIndex - 1, true);
-      }
-      break;
-    case "Home":
-      event.preventDefault();
-      setSelectedEntry(0, true);
-      break;
-    case "End":
-      event.preventDefault();
-      setSelectedEntry(currentEntries.length - 1, true);
-      break;
-    case "Enter":
-    case "ArrowRight":
-      event.preventDefault();
-      openSelectedEntry();
-      break;
-    case "Backspace":
-    case "ArrowLeft":
-      event.preventDefault();
-      if (currentDirectory?.parent) {
-        loadDirectory(currentDirectory.parent);
-      }
-      break;
-    default:
-      break;
-  }
-}
-
-async function updatePathInfo(path) {
-  if (!elements.pathInfo) {
-    return;
-  }
-  if (!path) {
-    elements.pathInfo.textContent = "";
-    elements.pathInfo.classList.remove("invalid");
-    lastPathInfoChecked = null;
-    return;
-  }
-  if (path === lastPathInfoChecked) {
-    return;
-  }
-  try {
-    const info = await sendMessage("fs:check", { path });
-    let message = "";
-    if (info.exists) {
-      message = info.is_dir ? "Ordner vorhanden" : "Pfad existiert";
+  const totals = state.libraryTotals || { symbols: 0, footprints: 0, models: 0 };
+  if (elements.librarySummary) {
+    if (!totalLibraries) {
+      elements.librarySummary.textContent = "No libraries available yet.";
     } else {
-      message = "Ordner wird neu erstellt";
-    }
-    if (info.writable) {
-      message += " – beschreibbar";
-      elements.pathInfo.classList.remove("invalid");
-    } else {
-      message += " – keine Schreibrechte";
-      elements.pathInfo.classList.add("invalid");
-    }
-    elements.pathInfo.textContent = message;
-    lastPathInfoChecked = path;
-  } catch (error) {
-    elements.pathInfo.textContent = error.message;
-    elements.pathInfo.classList.add("invalid");
-    lastPathInfoChecked = null;
-  }
-}
-
-async function loadDirectory(path, options = {}) {
-  const { pushHistory = true } = options;
-  try {
-    const targetPath = String(path);
-    if (pushHistory && currentDirectory?.path && currentDirectory.path !== targetPath) {
-      pathHistory.push(currentDirectory.path);
-      if (pathHistory.length > 50) {
-        pathHistory.shift();
+      let summary = `Symbol: ${totals.symbols} · Footprints: ${totals.footprints} · 3D: ${totals.models}`;
+      if (query) {
+        summary += ` · Treffer: ${visibleCount}/${totalLibraries}`;
       }
+      elements.librarySummary.textContent = summary;
     }
-    const data = await sendMessage("fs:listDirectory", { path: targetPath });
-    currentDirectory = data;
-    selectedEntryIndex = -1;
-    updateDirectoryView();
-    await updatePathInfo(currentDirectory.path);
-    elements.pathError.textContent = "";
-    updatePathNavState();
-  } catch (error) {
-    elements.pathError.textContent = error.message;
   }
-}
 
-function updateDirectoryView() {
-  if (!currentDirectory) {
-    return;
-  }
-  const currentPath = currentDirectory.path;
-  elements.pathManual.value = currentPath;
-  renderBreadcrumb(currentPath);
-  const previousPath = elements.pathEntries?.dataset?.currentPath || "";
-  const preserveScroll = previousPath === currentPath;
-  renderDirectoryEntries(currentDirectory.entries, preserveScroll);
-  if (elements.pathEntries) {
-    elements.pathEntries.dataset.currentPath = currentPath;
-  }
-  updatePathNavState();
-}
-
-async function applyCurrentPath() {
-  if (!currentDirectory?.path) {
-    elements.pathError.textContent = "Bitte Ordner auswählen.";
-    return;
-  }
-  const userName = elements.libraryName.value.trim();
-  const fallbackName =
-    userName
-    || state.selectedLibraryName
-    || state.defaultLibraryName
-    || formatPathLabel(currentDirectory.path)
-    || "easyeda2kicad";
-  try {
-    const result = await sendMessage("setSelectedLibrary", {
-      path: currentDirectory.path,
-      name: fallbackName,
-    });
-    state.selectedLibraryPath = result?.path || currentDirectory.path;
-    state.selectedLibraryName = result?.name || fallbackName;
-    elements.libraryName.value = state.selectedLibraryName || "";
-    if (elements.selectedPath) {
-      elements.selectedPath.value = state.selectedLibraryPath;
+  if (elements.headerActive) {
+    const active = sortedLibraries.find((item) => item.active) || sortedLibraries[0];
+    if (active) {
+      elements.headerActive.innerHTML = `
+        <span class="header-active-arrow">➜</span>
+        <span class="header-active-label">Active library</span>
+        <span class="header-active-name">${escapeHtml(active.name || "Untitled library")}</span>
+      `;
+    } else {
+      elements.headerActive.innerHTML = "";
     }
-    elements.pathManual.value = state.selectedLibraryPath;
-    lastPathInfoChecked = null;
-    updatePathInfo(state.selectedLibraryPath);
-    togglePathBrowser(false);
-    elements.pathError.textContent = "";
-  } catch (error) {
-    elements.pathError.textContent = error.message;
+  } else if (elements.headerActive) {
+    elements.headerActive.innerHTML = "";
+  }
+
+  if (!totalLibraries) {
+    if (elements.libraryEmpty) {
+      elements.libraryEmpty.textContent = "No libraries yet. Add one to get started.";
+      elements.libraryEmpty.classList.remove("d-none");
+    }
+    return;
+  }
+
+  if (!visibleCount) {
+    if (elements.libraryEmpty) {
+      elements.libraryEmpty.textContent = "No libraries matched your search.";
+      elements.libraryEmpty.classList.remove("d-none");
+    }
+    elements.libraryList.innerHTML = "";
+    return;
+  }
+
+  if (elements.libraryEmpty) {
+    elements.libraryEmpty.classList.add("d-none");
+    elements.libraryEmpty.textContent = "No libraries yet. Add one to get started.";
+  }
+
+  syncSelectedLibrary();
+
+  libraries.forEach((library) => {
+    const item = document.createElement("div");
+    item.className = "list-group-item library-entry";
+    item.dataset.id = library.id;
+
+    const info = document.createElement("div");
+    info.className = "library-info";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "d-flex align-items-center gap-2 mb-1";
+
+    const title = document.createElement("span");
+    title.className = "fw-semibold";
+    title.textContent = library.name || "Untitled library";
+    titleRow.appendChild(title);
+
+    if (library.active) {
+      const badge = document.createElement("span");
+      badge.className = "badge text-bg-success";
+      badge.textContent = "Active";
+      titleRow.appendChild(badge);
+    }
+
+    info.appendChild(titleRow);
+
+    const path = document.createElement("div");
+    path.className = "library-meta";
+    path.textContent = library.symbolPath || library.path || library.resolvedPrefix || "";
+    info.appendChild(path);
+
+    const assets = document.createElement("div");
+    assets.className = "library-assets mt-2";
+    assets.appendChild(renderAssetBadge("Symbol", library.assets?.symbol, library.counts?.symbol));
+    assets.appendChild(renderAssetBadge("Footprint", library.assets?.footprint, library.counts?.footprint));
+    assets.appendChild(renderAssetBadge("3D", library.assets?.model, library.counts?.model));
+    info.appendChild(assets);
+
+    const controls = document.createElement("div");
+    controls.className = "library-controls";
+
+    const switchWrapper = document.createElement("div");
+    switchWrapper.className = "form-check form-switch";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.className = "form-check-input library-toggle";
+    toggle.checked = Boolean(library.active);
+    toggle.dataset.id = library.id;
+    switchWrapper.appendChild(toggle);
+    controls.appendChild(switchWrapper);
+
+    const actions = document.createElement("div");
+    actions.className = "btn-group btn-group-sm";
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn btn-outline-danger library-remove";
+    removeBtn.setAttribute("aria-label", `Remove library ${library.name || ""}`.trim());
+    removeBtn.innerHTML = `
+      <svg class="icon icon-trash" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 3a1 1 0 0 0-1 1v1H5.5a1 1 0 0 0 0 2H6v11a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7h.5a1 1 0 1 0 0-2H16V4a1 1 0 0 0-1-1H9Zm1 2h4v1h-4V5Zm-1 4a1 1 0 1 1 2 0v8a1 1 0 1 1-2 0V9Zm6-1a1 1 0 0 0-1 1v8a1 1 0 1 0 2 0V9a1 1 0 0 0-1-1Z" />
+      </svg>
+    `;
+    removeBtn.dataset.id = library.id;
+    actions.appendChild(removeBtn);
+
+    controls.appendChild(actions);
+
+    item.append(info, controls);
+    elements.libraryList.appendChild(item);
+  });
+}
+
+function renderAssetBadge(label, active, count = 0) {
+  const badge = document.createElement("span");
+  const hasEntries = active && count > 0;
+  const displayCount = typeof count === "number" && count >= 0 ? ` (${count})` : "";
+  badge.className = `badge rounded-pill ${hasEntries ? "text-bg-success" : "text-bg-secondary"}`;
+  badge.innerHTML = `<span class="badge-label">${escapeHtml(label)}</span><span class="badge-count">${escapeHtml(displayCount.trim())}</span>`;
+  return badge;
+}
+
+function renderPartsResult() {
+  if (!elements.partsResult) return;
+  const job = state.lastJob;
+  if (!job) {
+    elements.partsResult.hidden = true;
+    elements.partsResultDetails.innerHTML = "";
+    return;
+  }
+
+  elements.partsResult.hidden = false;
+  const outputs = [];
+  if (job.outputs?.symbol || job.result?.symbol_path) outputs.push("Symbol");
+  if (job.outputs?.footprint || job.result?.footprint_path) outputs.push("Footprint");
+  if (job.outputs?.model || hasModelPaths(job.result)) outputs.push("3D");
+
+  const rows = [
+    ["Status", (job.status || "").toUpperCase()],
+    ["LCSC", job.lcscId || job.lcsc_id || "–"],
+    ["Library", job.libraryName || "–"],
+    ["Path", job.libraryPath || job.output_path || "–"],
+    ["Outputs", outputs.length ? outputs.join(" · ") : "–"],
+    ["Message", job.message || job.error || "–"],
+  ];
+
+  elements.partsResultDetails.innerHTML = rows
+    .map(([key, value]) => `
+      <dt class="col-4">${key}</dt>
+      <dd class="col-8">${escapeHtml(value)}</dd>
+    `)
+    .join("");
+}
+
+function hasModelPaths(result) {
+  if (!result) return false;
+  if (Array.isArray(result.model_paths)) {
+    return result.model_paths.length > 0;
+  }
+  if (typeof result.model_paths === "object" && result.model_paths !== null) {
+    return Object.keys(result.model_paths).length > 0;
+  }
+  return Boolean(result.model_paths);
+}
+
+function renderSettings() {
+  if (!elements.settingsServer) return;
+  if (!elements.settingsServer.matches(":focus")) {
+    elements.settingsServer.value = state.settings.serverUrl;
+  }
+  elements.settingsOverwrite.checked = state.settings.overwrite;
+  elements.settingsOverwriteModel.checked = state.settings.overwriteModel;
+  elements.settingsDebug.checked = state.settings.debug;
+  elements.settingsProjectRelative.checked = state.settings.projectRelative;
+}
+
+function setActiveTab(tab, options = {}) {
+  if (!TAB_IDS.includes(tab)) {
+    tab = "parts";
+  }
+  state.activeTab = tab;
+  elements.tabButtons.forEach((button) => {
+    const isActive = button.dataset.tab === tab;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+  });
+  TAB_IDS.forEach((id) => {
+    const panel = elements.panels[id];
+    if (panel) {
+      panel.classList.toggle("active", id === tab);
+    }
+  });
+  if (!options.silent) {
+    saveUiPreferences();
   }
 }
 
-async function handleJobSubmit(event) {
-  event.preventDefault?.();
-  elements.jobError.textContent = "";
-  elements.jobSuccess.textContent = "";
-  const lcscId = elements.lcscId.value.trim();
-  const libraryName = elements.libraryName.value.trim() || state.selectedLibraryName || state.defaultLibraryName || "easyeda2kicad";
-  const libraryPath = state.selectedLibraryPath || state.defaultLibraryPath;
+function handlePartsSubmit(event) {
+  event.preventDefault();
+  if (!elements.partsForm) return;
 
-  if (!lcscId || !lcscId.toUpperCase().startsWith("C")) {
-    elements.jobError.textContent = "Bitte eine gültige LCSC ID (z. B. C1234) eingeben.";
-    return;
-  }
-  if (!libraryPath) {
-    elements.jobError.textContent = "Bibliothekspfad auswählen oder in den Einstellungen hinterlegen.";
-    return;
-  }
-
+  clearPartsFeedback();
+  const lcscRaw = elements.partsLcsc.value.trim().toUpperCase();
   const outputs = {
-    symbol: elements.generateSymbol.checked,
-    footprint: elements.generateFootprint.checked,
-    model: elements.generateModel.checked,
+    symbol: elements.partsSymbol.checked,
+    footprint: elements.partsFootprint.checked,
+    model: elements.partsModel.checked,
   };
 
-  if (!outputs.symbol && !outputs.footprint && !outputs.model) {
-    elements.jobError.textContent = "Mindestens eine Ausgabeoption auswählen.";
+  const hasOutput = outputs.symbol || outputs.footprint || outputs.model;
+  if (!lcscRaw || !lcscRaw.startsWith("C")) {
+    setPartsFeedback("Please provide a valid LCSC number (e.g. C8734).", "danger");
+    elements.partsLcsc.classList.add("is-invalid");
+    return;
+  }
+  elements.partsLcsc.classList.remove("is-invalid");
+
+  if (!hasOutput) {
+    setPartsFeedback("Select at least one output (symbol, footprint, or 3D).", "danger");
+    return;
+  }
+
+  const activeLibrary = getActiveLibrary();
+  if (!activeLibrary) {
+    modals.libraryRequired?.show();
+    return;
+  }
+
+  const libraryPrefix = getLibraryPrefix(activeLibrary);
+  if (!libraryPrefix) {
+    setPartsFeedback("Library path is invalid.", "danger");
     return;
   }
 
   const payload = {
-    lcscId,
-    libraryName,
-    libraryPath,
+    lcscId: lcscRaw,
+    libraryPath: libraryPrefix,
+    libraryName: activeLibrary.name,
     symbol: outputs.symbol,
     footprint: outputs.footprint,
     model: outputs.model,
-    overwrite: elements.overwriteExisting.checked,
-    overwrite_model: elements.overwriteExisting.checked,
-    kicadVersion: "v6",
-    projectRelative: false,
+    overwrite: elements.partsOverwrite.checked,
+    overwrite_model: elements.partsOverwriteModel.checked,
+    projectRelative: elements.partsProjectRelative.checked,
   };
 
-  const submitButton = $("#submit-job");
-  const previousDisabled = submitButton ? submitButton.disabled : false;
-  if (submitButton) {
-    submitButton.disabled = true;
-  }
-  state.jobsLoading = true;
-  renderHistory();
-  trackEvent("cta_clicked", {
-    id: "job_submit",
-    lcscId: lcscId.toUpperCase(),
-    outputs,
-    overwrite: payload.overwrite,
-    overwrite_model: payload.overwrite_model,
-    kicadVersion: payload.kicadVersion,
-  });
-  try {
-    await sendMessage("submitJob", { payload });
-    elements.jobError.textContent = "";
-    if (!state.selectedLibraryName) {
-      state.selectedLibraryName = libraryName;
-    }
-    elements.jobSuccess.textContent = "Job gestartet.";
-  } catch (error) {
-    elements.jobError.textContent = error.message;
-    state.jobsLoading = false;
-  } finally {
-    if (submitButton) {
-      submitButton.disabled = previousDisabled;
-    }
-    if (!state.jobsLoading) {
-      renderHistory();
-    }
-  }
-}
+  elements.partsSubmit.disabled = true;
+  setPartsFeedback("Download started…", "info");
 
-async function handleClearHistory() {
-  try {
-    await sendMessage("clearHistory");
-    state.jobHistory = [];
-    renderHistory();
-    trackEvent("cta_clicked", { id: "history_clear" });
-  } catch (error) {
-    console.error(error);
-  }
-}
-
-function applyState(newState) {
-  if (!newState) {
-    return;
-  }
-  state.connected = Boolean(newState.connected);
-  state.serverUrl = newState.serverUrl || state.serverUrl;
-  state.defaultLibraryPath = newState.defaultLibraryPath || "";
-  state.defaultLibraryName = newState.defaultLibraryName || "";
-  state.selectedLibraryPath = newState.selectedLibraryPath || state.selectedLibraryPath || "";
-  state.selectedLibraryName = newState.selectedLibraryName || state.selectedLibraryName || "";
-  state.overwriteFootprints = Boolean(newState.overwriteFootprints);
-  state.overwriteModels = Boolean(newState.overwriteModels);
-  state.debugLogs = Boolean(newState.debugLogs);
-  state.jobs = Array.isArray(newState.jobs) ? newState.jobs : [];
-  state.jobHistory = Array.isArray(newState.jobHistory) ? newState.jobHistory : [];
-  state.jobsLoading = false;
-  state.historyLoading = false;
-  render();
-}
-
-function render() {
-  updateStatusIndicator();
-  if (elements.settingServerUrl) {
-    elements.settingServerUrl.value = state.serverUrl;
-  }
-  if (elements.settingDefaultPath) {
-    elements.settingDefaultPath.value = state.defaultLibraryPath;
-  }
-  if (elements.settingDefaultName) {
-    elements.settingDefaultName.value = state.defaultLibraryName;
-  }
-  if (elements.settingOverwriteFootprints) {
-    elements.settingOverwriteFootprints.checked = state.overwriteFootprints;
-  }
-  if (elements.settingOverwriteModels) {
-    elements.settingOverwriteModels.checked = state.overwriteModels;
-  }
-  if (elements.settingDebugLogs) {
-    elements.settingDebugLogs.checked = state.debugLogs;
-  }
-  if (elements.selectedPath) {
-    elements.selectedPath.value = state.selectedLibraryPath || "";
-  }
-  if (!elements.libraryName.value) {
-    elements.libraryName.value = state.selectedLibraryName || state.defaultLibraryName || "";
-  }
-  if (elements.historySearch && document.activeElement !== elements.historySearch) {
-    elements.historySearch.value = state.historySearchTerm;
-  }
-  if (elements.historyFilter) {
-    elements.historyFilter.value = state.historyFilter || "all";
-  }
-  if (elements.historyClearSearch) {
-    elements.historyClearSearch.disabled = !(state.historySearchTerm && state.historySearchTerm.trim());
-  }
-  if (elements.pathInfo) {
-    if (state.selectedLibraryPath) {
-      updatePathInfo(state.selectedLibraryPath);
-    } else {
-      elements.pathInfo.textContent = "";
-      elements.pathInfo.classList.remove("invalid");
-    }
-  }
-  updatePathNavState();
-  renderHistory();
-}
-
-function updateStatusIndicator() {
-  if (!elements.status) {
-    return;
-  }
-  const label = state.connected ? "Verbunden" : "Offline";
-  elements.status.dataset.state = state.connected ? "online" : "offline";
-  elements.status.classList.toggle("status-online", state.connected);
-  elements.status.classList.toggle("status-offline", !state.connected);
-  if (elements.statusLabel) {
-    elements.statusLabel.textContent = label;
-  } else {
-    elements.status.textContent = label;
-  }
-}
-
-function renderHistory() {
-  const container = elements.historyList;
-  if (!container) {
-    return;
-  }
-  resetCollection(container, ".history-card, .job-card");
-
-  if (state.historyLoading || state.jobsLoading) {
-    container.dataset.state = "loading";
-    if (elements.historyLoadMore) {
-      elements.historyLoadMore.hidden = true;
-    }
-    return;
-  }
-
-  const entries = getTimelineEntries();
-  const emptyPlaceholder = container.querySelector('.collection-placeholder[data-state="empty"]');
-  if (emptyPlaceholder) {
-    if (state.jobs.length === 0 && state.jobHistory.length === 0) {
-      emptyPlaceholder.textContent = "Noch keine Jobs oder Einträge.";
-    } else if (state.historySearchTerm.trim()) {
-      emptyPlaceholder.textContent = `Keine Treffer für „${state.historySearchTerm.trim()}“.`;
-    } else {
-      emptyPlaceholder.textContent = "Keine Einträge für den aktuellen Filter.";
-    }
-  }
-
-  if (!entries.length) {
-    container.dataset.state = "empty";
-    if (elements.historyLoadMore) {
-      elements.historyLoadMore.hidden = true;
-    }
-    return;
-  }
-
-  container.dataset.state = "ready";
-  const visibleCount = Math.max(state.historyPageSize, state.historyVisibleCount);
-  const visible = entries.slice(0, visibleCount);
-  visible.forEach((entry) => {
-    container.appendChild(buildTimelineCard(entry));
-  });
-  if (elements.historyLoadMore) {
-    elements.historyLoadMore.hidden = visible.length >= entries.length;
-  }
-}
-
-function buildJobCard(job) {
-  const card = document.createElement("article");
-  card.className = "job-card";
-
-  const header = document.createElement("div");
-  header.className = "job-card-header";
-
-  const title = document.createElement("div");
-  const titleStrong = document.createElement("strong");
-  titleStrong.textContent = job.lcscId || job.id;
-  title.appendChild(titleStrong);
-  const titleSuffix = document.createElement("span");
-  titleSuffix.textContent = ` · ${job.libraryName || "Bibliothek"}`;
-  title.appendChild(titleSuffix);
-
-  header.appendChild(title);
-  header.appendChild(createStatusChip(job.status));
-  card.appendChild(header);
-
-  const meta = document.createElement("div");
-  meta.className = "job-meta";
-  appendMetaRow(meta, "Pfad", job.libraryPath || "–", { code: true });
-
-  const queuePosition = Number.isFinite(job.queue_position) ? job.queue_position : "–";
-  const progressValue = Number.isFinite(job.progress)
-    ? `${Math.max(0, Math.min(100, job.progress))}%`
-    : "0%";
-  appendMetaRow(meta, "Warteschlange", `${queuePosition}`);
-  appendMetaRow(meta, "Fortschritt", progressValue);
-  appendMetaRow(meta, "Ausgabe", describeOutputs(job.outputs));
-  appendMetaRow(meta, "Gestartet", formatDateTime(job.created_at));
-  appendMetaRow(meta, "Nachricht", job.message || "–");
-
-  if (Array.isArray(job.result?.messages) && job.result.messages.length) {
-    appendMetaRow(meta, "Hinweise", job.result.messages.join(" · "));
-  }
-
-  card.appendChild(meta);
-
-  const progress = document.createElement("div");
-  progress.className = "job-progress";
-  const progressInner = document.createElement("span");
-  progressInner.style.width = progressValue;
-  progress.appendChild(progressInner);
-  card.appendChild(progress);
-
-  return card;
-}
-
-function buildHistoryCard(entry) {
-  const card = document.createElement("article");
-  card.className = "history-card";
-
-  const header = document.createElement("div");
-  header.className = "history-card-header";
-  const title = document.createElement("div");
-  const titleStrong = document.createElement("strong");
-  titleStrong.textContent = entry.lcscId || entry.id;
-  title.appendChild(titleStrong);
-  const titleSuffix = document.createElement("span");
-  titleSuffix.textContent = ` · ${entry.libraryName || "Bibliothek"}`;
-  title.appendChild(titleSuffix);
-  header.appendChild(title);
-  header.appendChild(createStatusChip(entry.status));
-  card.appendChild(header);
-
-  const meta = document.createElement("div");
-  meta.className = "history-meta";
-  appendMetaRow(meta, "Pfad", entry.libraryPath || "–", { code: true });
-  appendMetaRow(meta, "Gestartet", formatDateTime(entry.created_at));
-  appendMetaRow(meta, "Abgeschlossen", formatDateTime(entry.finished_at || entry.updated_at));
-  appendMetaRow(meta, "Ausgabe", describeOutputs(entry.outputs || entry.result));
-  appendMetaRow(meta, "Nachricht", entry.message || entry.result?.messages?.join(" · ") || "–");
-
-  const outputs = entry.result?.model_paths || {};
-  if (outputs && typeof outputs === "object" && Object.keys(outputs).length) {
-    appendMetaRow(meta, "Modelle", Object.values(outputs).join(", "));
-  }
-
-  card.appendChild(meta);
-  return card;
-}
-
-function getTimelineEntries() {
-  const statusFilter = (state.historyFilter || "all").toLowerCase();
-  const term = state.historySearchTerm.trim().toLowerCase();
-  const activeJobs = Array.isArray(state.jobs) ? state.jobs : [];
-  const historyEntries = Array.isArray(state.jobHistory) ? state.jobHistory : [];
-  const seen = new Set();
-  const entries = [];
-
-  const matchesSearch = (raw) => {
-    if (!term) {
-      return true;
-    }
-    const haystack = [
-      raw.lcscId,
-      raw.lcsc_id,
-      raw.libraryName,
-      raw.libraryPath,
-      raw.message,
-      raw.id,
-      ...(raw.result?.messages || []),
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(term);
-  };
-
-  const pushEntry = (raw, source) => {
-    if (!raw) {
-      return;
-    }
-    const normalizedStatus = (raw.status || "").toLowerCase();
-    if (statusFilter !== "all" && normalizedStatus !== statusFilter) {
-      return;
-    }
-    if (!matchesSearch(raw)) {
-      return;
-    }
-    const isActive = isActiveStatus(normalizedStatus);
-    const createdTimestamp = dateToTimestamp(
-      raw.created_at || raw.started_at || raw.updated_at || raw.finished_at,
-    );
-    const completedTimestamp = dateToTimestamp(
-      raw.finished_at || raw.updated_at || raw.created_at || raw.started_at,
-    );
-    entries.push({
-      source,
-      raw,
-      status: normalizedStatus,
-      isActive,
-      sortTimestamp: isActive ? createdTimestamp : completedTimestamp,
-      secondaryTimestamp: completedTimestamp,
+  sendMessage("submitJob", { payload })
+    .then((summary) => {
+      state.lastJob = {
+        ...summary,
+        ...payload,
+        outputs,
+        status: summary.status || "queued",
+        lcscId: lcscRaw,
+      };
+      renderPartsResult();
+      setPartsFeedback(`${payload.lcscId} was sent to ${payload.libraryName}.`, "success");
+    })
+    .catch((error) => {
+      setPartsFeedback(error.message || "Download failed.", "danger");
+      showToast(error.message || "Download failed", "danger");
+    })
+    .finally(() => {
+      elements.partsSubmit.disabled = false;
     });
+}
+
+function handleLibraryModalSubmit() {
+  const activeTab = elements.libraryModalTabs?.querySelector(".nav-link.active");
+  const target = activeTab?.getAttribute("data-bs-target") || "";
+  if (target === "#library-modal-create") {
+    submitCreateLibrary();
+  } else {
+    submitImportLibrary();
+  }
+}
+
+function handleLibrarySearch(event) {
+  const value = event?.target?.value ?? "";
+  if (state.libraryFilter === value) {
+    return;
+  }
+  state.libraryFilter = value;
+  renderLibraries();
+}
+
+function handleLibraryListChange(event) {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement)) return;
+  if (!input.classList.contains("library-toggle")) return;
+
+  const id = input.dataset.id;
+  if (!id) return;
+
+  const library = state.libraries.find((item) => item.id === id);
+  if (!library) return;
+
+  if (input.checked) {
+    state.libraries = state.libraries.map((item) => ({
+      ...item,
+      active: item.id === id,
+    }));
+  } else {
+    const otherActive = state.libraries.some((item) => item.id !== id && item.active);
+    if (!otherActive) {
+      input.checked = true;
+      showToast("At least one library must remain active.", "warning");
+      return;
+    }
+    state.libraries = state.libraries.map((item) => ({
+      ...item,
+      active: item.id === id ? false : item.active,
+    }));
+  }
+
+  syncSelectedLibrary();
+  renderLibraries();
+  persistLibraries();
+}
+
+function handleLibraryListClick(event) {
+  const button = event.target.closest("button");
+  if (!button) return;
+  const id = button.dataset.id;
+  if (!id) return;
+  const library = state.libraries.find((item) => item.id === id);
+  if (!library) return;
+  if (button.classList.contains("library-remove")) {
+    if (!confirm(`Remove library "${library.name}"?`)) {
+      return;
+    }
+    state.libraries = state.libraries.filter((item) => item.id !== id);
+    if (!state.libraries.some((item) => item.active) && state.libraries.length) {
+      state.libraries[0].active = true;
+    }
+    syncSelectedLibrary();
+    renderLibraries();
+    persistLibraries();
+    showToast("Library removed", "info");
+  }
+}
+
+function submitImportLibrary() {
+  clearLibraryModalError();
+  const path = elements.libraryImportPath.value.trim();
+  if (!path) {
+    setLibraryModalError("Please choose a file.");
+    return;
+  }
+  if (!path.toLowerCase().endsWith(".kicad_sym")) {
+    setLibraryModalError("Please select a .kicad_sym file.");
+    return;
+  }
+  elements.libraryModalSubmit.disabled = true;
+  sendMessage("importLibrary", { path })
+    .then((record) => {
+      state.libraries = upsertLibrary(record, true);
+      syncSelectedLibrary();
+      renderLibraries();
+      persistLibraries();
+      showToast(`Library "${record.name}" imported.`, "success");
+      modals.library?.hide();
+    })
+    .catch((error) => setLibraryModalError(error.message || "Import failed."))
+    .finally(() => {
+      elements.libraryModalSubmit.disabled = false;
+    });
+}
+
+function submitCreateLibrary() {
+  clearLibraryModalError();
+  const name = elements.libraryCreateName.value.trim();
+  const basePath = elements.libraryCreatePath.value.trim();
+  if (!name || !basePath) {
+    setLibraryModalError("Name and base folder are required.");
+    return;
+  }
+  const payload = {
+    name,
+    basePath,
+    symbol: elements.libraryCreateSymbol.checked,
+    footprint: elements.libraryCreateFootprint.checked,
+    model: elements.libraryCreateModel.checked,
+    projectRelative: elements.libraryCreateProject.checked,
   };
 
-  activeJobs.forEach((job) => {
-    const key = job?.id || job?.lcscId || job?.lcsc_id;
-    if (key) {
-      seen.add(key);
-    }
-    pushEntry(job, "active");
-  });
-
-  historyEntries.forEach((entry) => {
-    const key = entry?.id || entry?.lcscId || entry?.lcsc_id;
-    if (key && seen.has(key)) {
-      return;
-    }
-    pushEntry(entry, "history");
-  });
-
-  entries.sort((a, b) => {
-    if (a.isActive !== b.isActive) {
-      return a.isActive ? -1 : 1;
-    }
-    if (b.sortTimestamp !== a.sortTimestamp) {
-      return b.sortTimestamp - a.sortTimestamp;
-    }
-    return (b.secondaryTimestamp || 0) - (a.secondaryTimestamp || 0);
-  });
-
-  return entries;
+  elements.libraryModalSubmit.disabled = true;
+  sendMessage("createLibrary", payload)
+    .then((record) => {
+      state.libraries = upsertLibrary(record, true);
+      syncSelectedLibrary();
+      renderLibraries();
+      persistLibraries();
+      showToast(`Library "${record.name}" created.`, "success");
+      modals.library?.hide();
+    })
+    .catch((error) => setLibraryModalError(error.message || "Creation failed."))
+    .finally(() => {
+      elements.libraryModalSubmit.disabled = false;
+    });
 }
 
-function buildTimelineCard(entry) {
-  return entry.source === "active" ? buildJobCard(entry.raw) : buildHistoryCard(entry.raw);
-}
-
-function isActiveStatus(status) {
-  return status === "queued" || status === "running" || status === "pending";
-}
-
-function createStatusChip(status) {
-  const chip = document.createElement("span");
-  const normalized = (status || "queued").toLowerCase();
-  chip.className = `status-chip status-${normalized}`;
-  chip.textContent = normalized.toUpperCase();
-  return chip;
-}
-
-function appendMetaRow(container, label, value, options = {}) {
-  const row = document.createElement("div");
-  row.className = "meta-row";
-  const labelSpan = document.createElement("span");
-  labelSpan.className = "meta-label";
-  labelSpan.textContent = `${label}:`;
-  row.appendChild(labelSpan);
-  const resolvedValue =
-    value === undefined || value === null || value === "" ? "–" : String(value);
-  if (options.code) {
-    const code = document.createElement("code");
-    code.textContent = resolvedValue;
-    row.appendChild(code);
+function upsertLibrary(record, activate = false) {
+  const libraries = state.libraries.slice();
+  const index = libraries.findIndex((item) => item.id === record.id);
+  const normalized = {
+    ...record,
+    active: activate ? true : Boolean(record.active),
+    counts: {
+      symbol: Number(record?.counts?.symbol) || 0,
+      footprint: Number(record?.counts?.footprint) || 0,
+      model: Number(record?.counts?.model) || 0,
+    },
+  };
+  if (activate) {
+    libraries.forEach((item) => {
+      item.active = item.id === record.id;
+    });
+  }
+  if (index >= 0) {
+    libraries[index] = { ...libraries[index], ...normalized };
   } else {
-    const valueSpan = document.createElement("span");
-    valueSpan.textContent = resolvedValue;
-    row.appendChild(valueSpan);
+    if (activate) {
+      libraries.forEach((item) => (item.active = false));
+    }
+    libraries.push(normalized);
   }
-  container.appendChild(row);
+  return libraries;
 }
 
-function describeOutputs(outputs) {
-  if (!outputs) {
-    return "Symbol";
+function persistLibraries() {
+  sendMessage("updateLibraries", { libraries: state.libraries })
+    .then((snapshot) => {
+      if (snapshot) {
+        applyState(snapshot);
+      }
+    })
+    .catch((error) => showToast(error.message || "Saving failed", "danger"));
+}
+
+function handleSettingsChange() {
+  const payload = {
+    serverUrl: elements.settingsServer.value.trim(),
+    overwriteFootprints: elements.settingsOverwrite.checked,
+    overwriteModels: elements.settingsOverwriteModel.checked,
+    debugLogs: elements.settingsDebug.checked,
+    projectRelative: elements.settingsProjectRelative.checked,
+  };
+  state.settings.projectRelative = payload.projectRelative;
+  saveUiPreferences();
+  sendMessage("updateSettings", payload)
+    .then((snapshot) => {
+      applyState(snapshot);
+      setSettingsFeedback("Saved", "text-success");
+    })
+    .catch((error) => {
+      setSettingsFeedback(error.message || "Saving failed", "text-danger");
+    });
+}
+
+function testServerConnection() {
+  setSettingsFeedback("Checking connection…", "text-muted");
+  sendMessage("updateSettings", { serverUrl: elements.settingsServer.value.trim() })
+    .then(() => setSettingsFeedback("Server reachable", "text-success"))
+    .catch((error) => setSettingsFeedback(error.message || "Server not reachable", "text-danger"));
+}
+
+function clearPartsFeedback() {
+  if (elements.partsFeedback) {
+    elements.partsFeedback.innerHTML = "";
+    elements.partsFeedback.classList.add("d-none");
   }
-  const flags = new Set();
-  const sources = Array.isArray(outputs) ? outputs : [outputs];
-  sources.forEach((source) => {
-    if (!source || typeof source !== "object") {
-      return;
-    }
-    if (source.symbol || source.generate_symbol || source.symbol_path) {
-      flags.add("Symbol");
-    }
-    if (source.footprint || source.generate_footprint || source.footprint_path) {
-      flags.add("Footprint");
-    }
-    const hasModel =
-      source.model
-      || source.generate_model
-      || Boolean(source.model_paths && Object.keys(source.model_paths).length);
-    if (hasModel) {
-      flags.add("3D-Modell");
+}
+
+function setPartsFeedback(message, variant) {
+  if (!elements.partsFeedback) return;
+  const alert = document.createElement("div");
+  alert.className = `alert alert-${variant}`;
+  alert.textContent = message;
+  elements.partsFeedback.innerHTML = "";
+  elements.partsFeedback.appendChild(alert);
+  elements.partsFeedback.classList.remove("d-none");
+}
+
+function setSettingsFeedback(message, cls) {
+  if (!elements.settingsFeedback) return;
+  elements.settingsFeedback.className = `card-footer small ${cls}`.trim();
+  elements.settingsFeedback.textContent = message;
+  elements.settingsFeedback.classList.toggle("d-none", !message);
+}
+
+function clearLibraryModalError() {
+  if (!elements.libraryModalError) return;
+  elements.libraryModalError.textContent = "";
+  elements.libraryModalError.classList.remove("text-danger");
+}
+
+function setLibraryModalError(message) {
+  if (!elements.libraryModalError) return;
+  elements.libraryModalError.textContent = message;
+  elements.libraryModalError.classList.add("text-danger");
+}
+
+function setLibraryModalTab(mode) {
+  const targetId = mode === "create" ? "library-modal-create" : "library-modal-import";
+  const tabTrigger = elements.libraryModalTabs?.querySelector(`[data-bs-target="#${targetId}"]`);
+  if (tabTrigger) {
+    const tab = new bootstrap.Tab(tabTrigger);
+    tab.show();
+  }
+}
+
+function validateImportPath(path) {
+  if (!path) {
+    elements.libraryImportInfo.textContent = "";
+    elements.libraryImportInfo.className = "form-text";
+    return;
+  }
+  if (!path.toLowerCase().endsWith(".kicad_sym")) {
+    elements.libraryImportInfo.textContent = "Please select a .kicad_sym file.";
+    elements.libraryImportInfo.className = "form-text text-danger";
+    return;
+  }
+  elements.libraryImportInfo.textContent = "Checking path…";
+  elements.libraryImportInfo.className = "form-text text-muted";
+  sendMessage("validateLibrary", { path })
+    .then((result) => {
+      const counts = result.counts || {};
+      const parts = [];
+      parts.push(`Symbol (${counts.symbol ?? (result.assets?.symbol ? 1 : 0)})`);
+      parts.push(`Footprint (${counts.footprint ?? 0})`);
+      parts.push(`3D (${counts.model ?? 0})`);
+      const libraryName = deriveLibraryName(path);
+      const assetsLabel = parts.join(" · ");
+      elements.libraryImportInfo.textContent = libraryName
+        ? `${libraryName} – ${assetsLabel}`
+        : assetsLabel;
+      elements.libraryImportInfo.className = "form-text text-muted";
+    })
+    .catch((error) => {
+      elements.libraryImportInfo.textContent = error.message || "Not a valid library.";
+      elements.libraryImportInfo.className = "form-text text-danger";
+    });
+}
+
+function openDirectoryPicker({ mode, onSelect, applyLabel, initialPath }) {
+  state.picker.mode = mode;
+  state.picker.callback = onSelect;
+  state.picker.selectedPath = "";
+  state.picker.parentPath = "";
+  state.picker.currentPath = initialPath || "";
+  state.picker.selectedType = "";
+  state.picker.filterExtension = mode === "import" ? ".kicad_sym" : null;
+  state.picker.requireFile = mode === "import";
+  state.picker.breadcrumbs = [];
+  elements.pickerManual.value = initialPath || "";
+  elements.pickerError.textContent = "";
+  elements.pickerApply.textContent = applyLabel || "Select";
+
+  loadRoots()
+    .then((roots) => {
+      state.picker.roots = roots;
+      const trimmedInitial = initialPath && initialPath.trim() ? initialPath.trim() : "";
+      const extension = state.picker.filterExtension ? state.picker.filterExtension.toLowerCase() : null;
+      let startPath = trimmedInitial;
+      if (state.picker.requireFile && extension && trimmedInitial.toLowerCase().endsWith(extension)) {
+        state.picker.selectedPath = trimmedInitial;
+        state.picker.selectedType = "file";
+        startPath = trimmedInitial.replace(/[\\/][^\\/]*$/, "");
+        elements.pickerManual.value = trimmedInitial;
+      }
+      if (!startPath) {
+        startPath = roots[0]?.path || "";
+      }
+      if (startPath) {
+        const shouldRetain = state.picker.requireFile && state.picker.selectedType === "file";
+        return loadDirectory(startPath, { retainSelection: shouldRetain });
+      }
+      renderPickerList([]);
+      modals.picker?.show();
+      return null;
+    })
+    .catch((error) => {
+      elements.pickerError.textContent = error.message || "Failed to load folders.";
+      renderPickerList([]);
+      modals.picker?.show();
+    });
+}
+
+function loadRoots() {
+  if (state.picker.roots.length) {
+    return Promise.resolve(state.picker.roots);
+  }
+  return sendMessage("fs:listRoots");
+}
+
+function loadDirectory(path, options = {}) {
+  const { retainSelection = false } = options;
+  const previousSelection = retainSelection ? state.picker.selectedPath : "";
+  const previousType = retainSelection ? state.picker.selectedType : "";
+  return sendMessage("fs:listDirectory", { path })
+    .then((data) => {
+      state.picker.currentPath = data.path;
+      state.picker.parentPath = data.parent || "";
+      if (retainSelection) {
+        state.picker.selectedPath = previousSelection;
+        state.picker.selectedType = previousType;
+      } else {
+        state.picker.selectedPath = "";
+        state.picker.selectedType = "";
+      }
+      state.picker.breadcrumbs = Array.isArray(data.breadcrumbs) ? data.breadcrumbs : [];
+      elements.pickerManual.value = data.path;
+      renderPickerPathBreadcrumb();
+      renderPickerList(data.entries || []);
+      if (retainSelection && state.picker.selectedPath) {
+        if (state.picker.selectedType === "file") {
+          elements.pickerManual.value = state.picker.selectedPath;
+        }
+        const match = Array.from(elements.pickerList.querySelectorAll("li[data-path]"))
+          .find((node) => node.dataset.path === state.picker.selectedPath);
+        match?.classList.add("active");
+      }
+      elements.pickerError.textContent = "";
+      modals.picker?.show();
+      return data;
+    })
+    .catch((error) => {
+      elements.pickerError.textContent = error.message || "Failed to load path.";
+      renderPickerPathBreadcrumb();
+      renderPickerList([]);
+      modals.picker?.show();
+      return null;
+    });
+}
+
+function renderPickerPathBreadcrumb() {
+  if (!elements.pickerPathBreadcrumb) return;
+  const wrapper = document.createElement("div");
+  wrapper.className = "d-flex flex-wrap align-items-center gap-2";
+  const crumbs = Array.isArray(state.picker.breadcrumbs) ? state.picker.breadcrumbs : [];
+
+  if (!crumbs.length) {
+    const none = document.createElement("span");
+    none.className = "small text-muted";
+    none.textContent = "No path";
+    wrapper.appendChild(none);
+  } else {
+    crumbs.forEach((crumb, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-sm btn-outline-secondary";
+      button.textContent = crumb?.label || crumb?.path || "";
+      if (index === crumbs.length - 1) {
+        button.disabled = true;
+        button.classList.add("active");
+      } else if (crumb?.path) {
+        button.addEventListener("click", () => loadDirectory(crumb.path));
+      }
+      wrapper.appendChild(button);
+    });
+  }
+
+  elements.pickerPathBreadcrumb.innerHTML = "";
+  elements.pickerPathBreadcrumb.appendChild(wrapper);
+}
+
+function renderPickerList(entries) {
+  elements.pickerList.innerHTML = "";
+  const extension = state.picker.filterExtension ? state.picker.filterExtension.toLowerCase() : null;
+  const directories = entries.filter((entry) => entry.is_dir);
+  const files = extension
+    ? entries.filter((entry) => !entry.is_dir && entry.name.toLowerCase().endsWith(extension))
+    : [];
+
+  if (!directories.length && !files.length) {
+    const empty = document.createElement("li");
+    empty.className = "list-group-item text-muted";
+    empty.textContent = state.picker.requireFile
+      ? `No ${extension || ""} files`
+      : "No entries";
+    elements.pickerList.appendChild(empty);
+    return;
+  }
+
+  const displayEntries = [...directories, ...files];
+  displayEntries.forEach((entry) => {
+    const isDir = Boolean(entry.is_dir);
+    const item = document.createElement("li");
+    item.className = "list-group-item list-group-item-action d-flex justify-content-between align-items-center";
+    item.dataset.path = entry.path;
+    item.dataset.type = isDir ? "dir" : "file";
+    item.tabIndex = 0;
+    const icon = isDir ? "&#128193;" : "&#128196;";
+    item.innerHTML = `
+      <span>${escapeHtml(entry.name)}</span>
+      <span aria-hidden="true">${icon}</span>
+    `;
+    elements.pickerList.appendChild(item);
+    if (state.picker.selectedPath && state.picker.selectedPath === entry.path) {
+      item.classList.add("active");
     }
   });
-  return flags.size ? Array.from(flags).join(" · ") : "Keine Ausgaben";
 }
 
-function dateToTimestamp(value) {
-  if (!value) {
-    return 0;
-  }
-  const timestamp = new Date(value).getTime();
-  return Number.isNaN(timestamp) ? 0 : timestamp;
+function handlePickerListClick(event) {
+  const item = event.target.closest("li[data-path]");
+  if (!item) return;
+  selectPickerItem(item);
 }
 
-function formatDateTime(value) {
-  if (!value) {
-    return "–";
-  }
-  try {
-    return new Date(value).toLocaleString();
-  } catch (error) {
-    logDebug("Konnte Datum nicht formatieren", value, error);
-    return value;
+function handlePickerListDoubleClick(event) {
+  const item = event.target.closest("li[data-path]");
+  if (!item) return;
+  if (item.dataset.type === "file") {
+    selectPickerItem(item);
+    applyPickerSelection();
+  } else {
+    loadDirectory(item.dataset.path);
   }
 }
 
-async function bootstrap() {
-  initElements();
-  bindEvents();
-  try {
-    const initialState = await sendMessage("getState");
-    applyState(initialState);
-  } catch (error) {
-    console.error("Konnte Zustand nicht laden", error);
+function handlePickerListKeydown(event) {
+  const items = Array.from(elements.pickerList.querySelectorAll("li[data-path]"));
+  if (!items.length) return;
+  const currentIndex = items.findIndex((item) => item.classList.contains("active"));
+
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    const next = items[(currentIndex + 1) % items.length];
+    selectPickerItem(next);
+    next?.focus();
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    const prev = items[(currentIndex - 1 + items.length) % items.length];
+    selectPickerItem(prev);
+    prev?.focus();
+  } else if (event.key === "Enter" && currentIndex >= 0) {
+    event.preventDefault();
+    const current = items[currentIndex];
+    if (current.dataset.type === "file") {
+      selectPickerItem(current);
+      applyPickerSelection();
+    } else {
+      loadDirectory(current.dataset.path);
+    }
   }
 }
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === "stateUpdate") {
-    applyState(message.state);
+function scheduleManualPathLoad(path, { immediate = false } = {}) {
+  clearTimeout(pickerManualTimer);
+  if (!path) {
+    elements.pickerError.textContent = "";
+    return;
   }
-});
+  const extension = state.picker.filterExtension ? state.picker.filterExtension.toLowerCase() : null;
+  if (state.picker.requireFile && extension && path.toLowerCase().endsWith(extension)) {
+    state.picker.selectedPath = path;
+    state.picker.selectedType = "file";
+    elements.pickerError.textContent = "";
+    return;
+  }
+  state.picker.selectedPath = "";
+  state.picker.selectedType = "";
+  const perform = () => loadDirectory(path);
+  if (immediate) {
+    perform();
+    return;
+  }
+  pickerManualTimer = setTimeout(() => {
+    if (elements.pickerManual.value.trim() === path) {
+      perform();
+    }
+  }, 400);
+}
 
-document.addEventListener("DOMContentLoaded", bootstrap);
+function handlePickerManualInput() {
+  scheduleManualPathLoad(elements.pickerManual.value.trim());
+}
+
+function handlePickerManualChange() {
+  scheduleManualPathLoad(elements.pickerManual.value.trim(), { immediate: true });
+}
+
+function handlePickerManualKeydown(event) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  scheduleManualPathLoad(elements.pickerManual.value.trim(), { immediate: true });
+}
+
+function selectPickerItem(item) {
+  Array.from(elements.pickerList.querySelectorAll("li[data-path]")).forEach((node) => {
+    node.classList.remove("active");
+  });
+  item.classList.add("active");
+  state.picker.selectedPath = item.dataset.path;
+  state.picker.selectedType = item.dataset.type || "";
+  if (item.dataset.type === "file") {
+    elements.pickerManual.value = item.dataset.path;
+  }
+}
+
+function applyPickerSelection() {
+  const selected = state.picker.selectedPath || state.picker.currentPath;
+  if (!selected) {
+    elements.pickerError.textContent = state.picker.requireFile
+      ? "Please select a file."
+      : "Please select a folder.";
+    return;
+  }
+  if (state.picker.requireFile && state.picker.selectedType !== "file") {
+    elements.pickerError.textContent = "Please choose a .kicad_sym file.";
+    return;
+  }
+  state.picker.callback?.(selected);
+  modals.picker?.hide();
+}
+
+function getActiveLibrary() {
+  return state.libraries.find((library) => library.active);
+}
+
+function stripLibrarySuffix(path) {
+  if (!path) return "";
+  return path.replace(/\.(kicad_sym|lib)$/i, "");
+}
+
+function deriveLibraryName(path) {
+  if (!path) return "";
+  const normalized = stripLibrarySuffix(path.trim());
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  if (!parts.length) return "";
+  const last = parts[parts.length - 1];
+  return last;
+}
+
+function getLibraryPrefix(library) {
+  if (!library) return "";
+  let candidate = library.path || library.resolvedPrefix || "";
+  if (!candidate && library.symbolPath) {
+    candidate = stripLibrarySuffix(library.symbolPath);
+  }
+  return stripLibrarySuffix(candidate);
+}
+
+function syncSelectedLibrary() {
+  const activeLibrary = getActiveLibrary();
+  if (!activeLibrary) {
+    return;
+  }
+  const prefix = getLibraryPrefix(activeLibrary);
+  if (!prefix) {
+    return;
+  }
+  const currentPath = state.selectedLibraryPath || "";
+  const currentName = state.selectedLibraryName || "";
+  if (currentPath === prefix && currentName === (activeLibrary.name || "")) {
+    return;
+  }
+  state.selectedLibraryPath = prefix;
+  state.selectedLibraryName = activeLibrary.name || "";
+  sendMessage("setSelectedLibrary", {
+    path: prefix,
+    name: activeLibrary.name || "",
+  }).catch((error) => {
+    console.warn("Failed to sync selected library", error);
+  });
+}
+
+function debounce(fn, delay = 200) {
+  let timeout;
+  return (...args) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => fn.apply(null, args), delay);
+  };
+}
+
+function sendMessage(type, payload = {}) {
+  return chrome.runtime
+    .sendMessage({ type, ...payload })
+    .then((response) => {
+      if (!response?.ok) {
+        throw new Error(response?.error || "Unknown error");
+      }
+      return response.data;
+    });
+}
+
+function showToast(message, variant = "primary") {
+  if (!elements.toastContainer) return;
+  const toastElement = document.createElement("div");
+  toastElement.className = `toast align-items-center text-bg-${variant}`;
+  toastElement.role = "status";
+  toastElement.ariaLive = "assertive";
+  toastElement.ariaAtomic = "true";
+  toastElement.innerHTML = `
+    <div class="d-flex">
+      <div class="toast-body">${escapeHtml(message)}</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>
+  `;
+  elements.toastContainer.appendChild(toastElement);
+  const toast = new bootstrap.Toast(toastElement, { delay: 4000 });
+  toast.show();
+  toastElement.addEventListener("hidden.bs.toast", () => {
+    toastElement.remove();
+  });
+}
+
+function escapeHtml(value) {
+  if (value == null) return "";
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+

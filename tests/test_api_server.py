@@ -1,3 +1,4 @@
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -98,3 +99,65 @@ class TaskApiTest(unittest.TestCase):
                 if detail.json()["status"] == "completed":
                     break
             self.assertTrue(captured.get("overwrite_model"))
+
+    def test_library_scaffold_and_validate(self) -> None:
+        app = create_app(conversion_runner=_dummy_runner)
+        with tempfile.TemporaryDirectory() as tmpdir, TestClient(app) as client:
+            payload = {
+                "base_path": tmpdir,
+                "library_name": "TestLib",
+                "symbol": True,
+                "footprint": True,
+                "model": True,
+            }
+            response = client.post("/libraries/scaffold", json=payload)
+            self.assertEqual(response.status_code, 201)
+            data = response.json()
+            self.assertTrue(Path(data["symbol_path"]).is_file())
+            self.assertTrue(Path(data["footprint_dir"]).is_dir())
+            self.assertTrue(Path(data["model_dir"]).is_dir())
+
+            validate = client.post(
+                "/libraries/validate", json={"path": data["resolved_library_prefix"]}
+            )
+            self.assertEqual(validate.status_code, 200)
+            validation = validate.json()
+            self.assertTrue(validation["exists"])
+            self.assertTrue(validation["is_dir"])
+            self.assertTrue(validation["assets"]["symbol"])
+            self.assertTrue(validation["assets"]["footprint"])
+            self.assertTrue(validation["assets"]["model"])
+            self.assertGreaterEqual(validation["counts"].get("symbol"), 0)
+            self.assertIsInstance(validation["counts"].get("footprint"), int)
+            self.assertIsInstance(validation["counts"].get("model"), int)
+
+            validate_file = client.post(
+                "/libraries/validate", json={"path": data["symbol_path"]}
+            )
+            self.assertEqual(validate_file.status_code, 200)
+            validation_file = validate_file.json()
+            self.assertEqual(Path(validation_file["resolved_path"]).resolve(), Path(data["symbol_path"]).resolve())
+            self.assertTrue(validation_file["exists"])
+            self.assertFalse(validation_file["is_dir"])
+            self.assertTrue(validation_file["assets"]["symbol"])
+            self.assertGreaterEqual(validation_file["counts"].get("symbol"), 0)
+
+    def test_symbol_counts_multiple_entries(self) -> None:
+        app = create_app(conversion_runner=_dummy_runner)
+        with tempfile.TemporaryDirectory() as tmpdir, TestClient(app) as client:
+            sym_path = Path(tmpdir) / "multi.kicad_sym"
+            sym_path.write_text(
+                """
+(kicad_symbol_lib (version 20211014) (generator test)
+  (symbol "Device:R" (property "Reference" "R" (id 0)) )
+  (symbol "Device:C" (property "Reference" "C" (id 0)) )
+)
+""".strip(),
+                encoding="utf-8",
+            )
+
+            response = client.post("/libraries/validate", json={"path": str(sym_path)})
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertTrue(data["assets"]["symbol"])
+            self.assertEqual(data["counts"].get("symbol"), 2)

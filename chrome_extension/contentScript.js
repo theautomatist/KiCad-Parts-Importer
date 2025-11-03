@@ -17,8 +17,31 @@ const COLORS = {
 };
 
 const jobWatchers = new Map();
+const activeObservers = new Set();
 let spinnerStyleInjected = false;
 let debugEnabled = false;
+let currentUrl = window.location.href;
+
+function sendRuntimeMessage(payload, { retries = 3, delay = 250 } = {}) {
+  return new Promise((resolve, reject) => {
+    const attempt = (remaining) => {
+      chrome.runtime.sendMessage(payload, (response) => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          const message = runtimeError.message || "Runtime messaging error";
+          if (remaining > 0 && /no sw/i.test(message)) {
+            setTimeout(() => attempt(remaining - 1), delay);
+            return;
+          }
+          reject(new Error(message));
+          return;
+        }
+        resolve(response);
+      });
+    };
+    attempt(retries);
+  });
+}
 
 const ICONS = {
   download: "M5 20h14v-2H5v2zm7-18v12h4l-5 5-5-5h4V2h2z",
@@ -45,17 +68,13 @@ function dbg(...args) {
   }
 }
 
-function initDebug() {
+async function initDebug() {
   try {
-    chrome.runtime.sendMessage({ type: "getState" }, (response) => {
-      if (chrome.runtime.lastError) {
-        return;
-      }
-      if (response?.ok && response.data) {
-        debugEnabled = Boolean(response.data.debugLogs);
-        dbg("debug flag initial", debugEnabled);
-      }
-    });
+    const response = await sendRuntimeMessage({ type: "getState" }, { retries: 5, delay: 300 });
+    if (response?.ok && response.data) {
+      debugEnabled = Boolean(response.data.debugLogs);
+      dbg("debug flag initial", debugEnabled);
+    }
   } catch (_error) {
     // ignore
   }
@@ -152,7 +171,7 @@ function mapMissingLabel(key) {
     case "footprint":
       return "Footprint";
     case "model":
-      return "3D-Modell";
+      return "3D model";
     default:
       return key;
   }
@@ -160,15 +179,15 @@ function mapMissingLabel(key) {
 
 function formatMissingTooltip(missing = []) {
   if (!missing.length) {
-    return "Teilweise importiert";
+    return "Partially imported";
   }
   const labels = missing.map(mapMissingLabel);
   if (labels.length === 1) {
-    return `Unvollständig: ${labels[0]} fehlt`;
+    return `Incomplete: ${labels[0]} missing`;
   }
   const head = labels.slice(0, -1).join(", ");
   const tail = labels[labels.length - 1];
-  return `Unvollständig: ${head} und ${tail} fehlen`;
+  return `Incomplete: ${head} and ${tail} missing`;
 }
 
 function buildSuccessTooltip(analysis, messages) {
@@ -210,7 +229,7 @@ function createButton(variant = "product") {
     button.classList.add(LIST_BUTTON_CLASS);
   }
   button.type = "button";
-  button.setAttribute("title", "easyeda2kicad Download");
+  button.setAttribute("title", "easyeda2kicad download");
   button.style.marginLeft = variant === "list" ? "8px" : "12px";
   button.style.padding = variant === "list" ? "4px" : "6px";
   button.style.borderRadius = "999px";
@@ -285,13 +304,13 @@ function updateButtonState(button, state, options = {}) {
       button.disabled = false;
       setSpin(button, false);
       setIcon(button, COLORS.primary, "download");
-      button.setAttribute("title", options.message || "easyeda2kicad Download");
+      button.setAttribute("title", options.message || "easyeda2kicad download");
       break;
     case "pending":
       button.disabled = true;
       setSpin(button, true);
       setIcon(button, COLORS.spinner, "spinner");
-      button.setAttribute("title", options.message || "Konvertierung wird gestartet…");
+      button.setAttribute("title", options.message || "Conversion is starting…");
       break;
     case "progress":
       button.disabled = true;
@@ -299,26 +318,26 @@ function updateButtonState(button, state, options = {}) {
       setIcon(button, COLORS.spinner, "spinner");
       button.setAttribute(
         "title",
-        options.message || `Konvertierung läuft… ${Math.round(options.progress ?? 0)}%`,
+        options.message || `Conversion in progress… ${Math.round(options.progress ?? 0)}%`,
       );
       break;
     case "success":
       button.disabled = false;
       setSpin(button, false);
       setIcon(button, COLORS.success, "check");
-      button.setAttribute("title", options.message || "In Bibliothek vorhanden");
+      button.setAttribute("title", options.message || "Available in library");
       break;
     case "partial":
       button.disabled = false;
       setSpin(button, false);
       setIcon(button, COLORS.warning, options.iconType || "download");
-      button.setAttribute("title", options.message || "Unvollständig – teilweise importiert");
+      button.setAttribute("title", options.message || "Incomplete – partially imported");
       break;
     case "error":
       button.disabled = false;
       setSpin(button, false);
       setIcon(button, COLORS.error, options.iconType || "download");
-      button.setAttribute("title", options.message || "Download fehlgeschlagen");
+      button.setAttribute("title", options.message || "Download failed");
       break;
     default:
       break;
@@ -450,13 +469,16 @@ function attachListButtons() {
 
 async function handleDownloadClick(button, lcscId) {
   dbg("handleDownloadClick", lcscId);
-  updateButtonState(button, "pending", { progress: 0, message: "Konvertierung wird gestartet…" });
+  updateButtonState(button, "pending", { progress: 0, message: "Conversion is starting…" });
   try {
-    const response = await chrome.runtime.sendMessage({
-      type: "quickDownload",
-      lcscId,
-      source: "contentScript",
-    });
+    const response = await sendRuntimeMessage(
+      {
+        type: "quickDownload",
+        lcscId,
+        source: "contentScript",
+      },
+      { retries: 4, delay: 300 },
+    );
     if (!response?.ok) {
       dbg("handleDownloadClick: backend returned error", response);
       throw new Error(response?.error || "Unbekannter Fehler");
@@ -464,7 +486,7 @@ async function handleDownloadClick(button, lcscId) {
     const data = response.data || {};
     const jobId = data.jobId;
     if (jobId) {
-      updateButtonState(button, "progress", { progress: 0, message: "Konvertierung läuft…" });
+      updateButtonState(button, "progress", { progress: 0, message: "Conversion in progress…" });
       startJobWatcher(button, jobId);
     } else {
       updateButtonState(button, "success", { message: "Job eingereiht" });
@@ -478,12 +500,15 @@ async function handleDownloadClick(button, lcscId) {
 
 async function initialiseButtonState(button, lcscId) {
   try {
-    const response = await chrome.runtime.sendMessage({
-      type: "checkComponentExists",
-      lcscId,
-    });
+    const response = await sendRuntimeMessage(
+      {
+        type: "checkComponentExists",
+        lcscId,
+      },
+      { retries: 4, delay: 300 },
+    );
     if (!response?.ok) {
-      throw new Error(response?.error || "Fehler beim Prüfen der Bibliothek");
+      throw new Error(response?.error || "Failed to check library status");
     }
     const data = response.data || {};
     const messages = Array.isArray(data.messages) ? data.messages : [];
@@ -500,14 +525,14 @@ async function initialiseButtonState(button, lcscId) {
       } else {
         const tooltip = buildSuccessTooltip(analysis, messages);
         updateButtonState(button, "success", {
-          message: tooltip || "Bereits in Bibliothek",
+        message: tooltip || "Already in library",
         });
         button.dataset[INIT_ATTR] = "true";
       }
     } else if (data.inProgress && data.jobId) {
       updateButtonState(button, "progress", {
         progress: 0,
-        message: "Konvertierung läuft…",
+        message: "Conversion in progress…",
       });
       startJobWatcher(button, data.jobId);
       button.dataset[INIT_ATTR] = "true";
@@ -528,12 +553,15 @@ function startJobWatcher(button, jobId) {
 
   const poll = async () => {
     try {
-      const response = await chrome.runtime.sendMessage({
-        type: "getJobStatus",
-        jobId,
-      });
+      const response = await sendRuntimeMessage(
+        {
+          type: "getJobStatus",
+          jobId,
+        },
+        { retries: 4, delay: 400 },
+      );
       if (!response?.ok) {
-        throw new Error(response?.error || "Jobstatus nicht verfügbar");
+        throw new Error(response?.error || "Job status unavailable");
       }
       const job = response.data || {};
       const messages = Array.isArray(job.messages) ? job.messages : [];
@@ -550,21 +578,21 @@ function startJobWatcher(button, jobId) {
         } else {
           const tooltip = buildSuccessTooltip(analysis, messages);
           updateButtonState(button, "success", {
-            message: tooltip || "Konvertierung abgeschlossen",
+            message: tooltip || "Conversion finished",
           });
         }
         clearJobWatcher(jobId);
         return;
       }
       if (job.status === "failed") {
-        updateButtonState(button, "error", { message: job.message || "Konvertierung fehlgeschlagen" });
+        updateButtonState(button, "error", { message: job.message || "Conversion failed" });
         clearJobWatcher(jobId);
         return;
       }
 
       const message = job.status === "queued"
         ? "Wartet auf Verarbeitung"
-        : `Konvertierung läuft – ${Math.round(progress)}%`;
+        : `Conversion in progress – ${Math.round(progress)}%`;
       updateButtonState(button, "progress", { progress, message });
       const delay = job.status === "queued" ? 2000 : 1200;
       const timer = setTimeout(poll, delay);
@@ -580,22 +608,32 @@ function startJobWatcher(button, jobId) {
   poll();
 }
 
-function init() {
-  initDebug();
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type === "stateUpdate" && message.state) {
-      const previous = debugEnabled;
-      debugEnabled = Boolean(message.state.debugLogs);
-      if (!previous && debugEnabled) {
-        console.log("[easyeda2kicad] debug logs enabled");
-      } else if (previous && !debugEnabled) {
-        console.log("[easyeda2kicad] debug logs disabled");
-      }
-    }
+function registerObserver(observer) {
+  activeObservers.add(observer);
+}
+
+function cleanupObservers() {
+  activeObservers.forEach((observer) => observer.disconnect());
+  activeObservers.clear();
+}
+
+function cleanupInjectedUi() {
+  const productRow = document.getElementById(`${BUTTON_ID}-row`);
+  if (productRow?.parentElement) {
+    productRow.parentElement.removeChild(productRow);
+  }
+  document.querySelectorAll(`.${LIST_CONTAINER_CLASS}`).forEach((holder) => {
+    holder.remove();
   });
+  jobWatchers.forEach((_, jobId) => clearJobWatcher(jobId));
+}
+
+function setupForCurrentRoute() {
+  cleanupObservers();
+  cleanupInjectedUi();
 
   const path = window.location.pathname || "";
-  dbg("init path", path);
+  dbg("setupForCurrentRoute", path);
 
   if (PRODUCT_REGEX.test(path)) {
     const lcscId = extractLcscId();
@@ -612,6 +650,7 @@ function init() {
     const observer = new MutationObserver(() => {
       if (attachButton(lcscId)) {
         observer.disconnect();
+        activeObservers.delete(observer);
         dbg("product MutationObserver inserted button");
       }
     });
@@ -620,8 +659,12 @@ function init() {
       childList: true,
       subtree: true,
     });
+    registerObserver(observer);
 
-    setTimeout(() => observer.disconnect(), 10000);
+    setTimeout(() => {
+      observer.disconnect();
+      activeObservers.delete(observer);
+    }, 10000);
     return;
   }
 
@@ -638,7 +681,50 @@ function init() {
       childList: true,
       subtree: true,
     });
+    registerObserver(observer);
   }
+}
+
+function scheduleRouteCheck() {
+  const url = window.location.href;
+  if (url === currentUrl) {
+    return;
+  }
+  currentUrl = url;
+  setupForCurrentRoute();
+}
+
+function setupRouteListener() {
+  const wrapHistory = (method) => {
+    const original = history[method];
+    history[method] = function wrappedHistory(...args) {
+      const result = original.apply(this, args);
+      scheduleRouteCheck();
+      return result;
+    };
+  };
+  wrapHistory("pushState");
+  wrapHistory("replaceState");
+  window.addEventListener("popstate", scheduleRouteCheck);
+  window.addEventListener("hashchange", scheduleRouteCheck);
+}
+
+function init() {
+  initDebug();
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type === "stateUpdate" && message.state) {
+      const previous = debugEnabled;
+      debugEnabled = Boolean(message.state.debugLogs);
+      if (!previous && debugEnabled) {
+        console.log("[easyeda2kicad] debug logs enabled");
+      } else if (previous && !debugEnabled) {
+        console.log("[easyeda2kicad] debug logs disabled");
+      }
+    }
+  });
+
+  setupRouteListener();
+  setupForCurrentRoute();
 }
 
 if (document.readyState === "loading") {
@@ -646,4 +732,3 @@ if (document.readyState === "loading") {
 } else {
   init();
 }
-    dbg("list table detected, setting up observer");

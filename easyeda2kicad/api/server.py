@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
+import re
 import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Set
+from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from fastapi import (
     APIRouter,
@@ -114,6 +115,208 @@ class PathRequest(BaseModel):
     path: str
 
 
+class LibraryScaffoldRequest(BaseModel):
+    base_path: str = Field(..., description="Base directory for the library")
+    library_name: str = Field(..., description="Library name without extension")
+    symbol: bool = True
+    footprint: bool = True
+    model: bool = True
+    project_relative: bool = False
+
+    @model_validator(mode="after")
+    def ensure_outputs(cls, payload: "LibraryScaffoldRequest") -> "LibraryScaffoldRequest":
+        if not any((payload.symbol, payload.footprint, payload.model)):
+            raise ValueError("Select at least one scaffold target.")
+        return payload
+
+
+class LibraryScaffoldResponse(BaseModel):
+    resolved_library_prefix: str
+    symbol_path: Optional[str]
+    footprint_dir: Optional[str]
+    model_dir: Optional[str]
+    created: Dict[str, bool]
+
+
+class LibraryValidateRequest(BaseModel):
+    path: str
+
+
+class LibraryValidateResponse(BaseModel):
+    resolved_path: str
+    exists: bool
+    is_dir: bool
+    writable: bool
+    assets: Dict[str, bool]
+    counts: Dict[str, int] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+
+
+def _normalize_library_prefix(base_path: str, library_name: str) -> Path:
+    try:
+        base = Path(base_path).expanduser().resolve(strict=False)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base path: {base_path}") from exc
+    cleaned_name = (library_name or "").strip()
+    if not cleaned_name:
+        raise HTTPException(status_code=400, detail="Library name must not be empty.")
+    if any(sep in cleaned_name for sep in ("/", "\\")):
+        raise HTTPException(status_code=400, detail="Library name must not contain path separators.")
+    return base / cleaned_name
+
+
+def _ensure_directory_writable(path: Path) -> None:
+    if not path.exists():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=f"Missing permissions for '{path}'.") from exc
+    if not os.access(str(path), os.W_OK):
+        raise HTTPException(status_code=403, detail=f"Directory not writable: {path}")
+
+
+def _scaffold_library(payload: LibraryScaffoldRequest) -> Tuple[Path, Dict[str, bool], Dict[str, Optional[str]]]:
+    prefix = _normalize_library_prefix(payload.base_path, payload.library_name)
+    _ensure_directory_writable(prefix.parent)
+
+    created: Dict[str, bool] = {"symbol": False, "footprint": False, "model": False}
+    paths: Dict[str, Optional[str]] = {"symbol": None, "footprint": None, "model": None}
+
+    if not prefix.exists():
+        try:
+            prefix.mkdir(exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(status_code=403, detail=f"Unable to create library folder: {prefix}") from exc
+
+    symbol_path = prefix.with_suffix(".kicad_sym")
+    if payload.symbol:
+        if not symbol_path.exists():
+            try:
+                symbol_path.write_text(
+                    "(kicad_symbol_lib\n"
+                    "  (version 20211014)\n"
+                    "  (generator https://github.com/uPesy/easyeda2kicad.py)\n"
+                    ")",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                raise HTTPException(status_code=403, detail=f"Unable to create symbol file: {symbol_path}") from exc
+            created["symbol"] = True
+        paths["symbol"] = str(symbol_path)
+    elif symbol_path.exists():
+        paths["symbol"] = str(symbol_path)
+
+    footprint_dir = prefix.with_suffix(".pretty")
+    if payload.footprint:
+        if not footprint_dir.exists():
+            try:
+                footprint_dir.mkdir(exist_ok=True)
+            except OSError as exc:
+                raise HTTPException(status_code=403, detail=f"Unable to create footprint folder: {footprint_dir}") from exc
+            created["footprint"] = True
+        paths["footprint"] = str(footprint_dir)
+    elif footprint_dir.exists():
+        paths["footprint"] = str(footprint_dir)
+
+    if payload.model or payload.footprint:
+        model_dir = prefix.with_suffix(".3dshapes")
+        created_model = False
+        if not model_dir.exists():
+            try:
+                model_dir.mkdir(exist_ok=True)
+            except OSError as exc:
+                raise HTTPException(status_code=403, detail=f"Unable to create 3D folder: {model_dir}") from exc
+            created_model = True
+        if model_dir.exists():
+            paths["model"] = str(model_dir)
+        if payload.model:
+            created["model"] = created_model
+        elif created_model:
+            created["model"] = True
+
+    return prefix, created, paths
+
+
+def _inspect_library(path: str) -> LibraryValidateResponse:
+    try:
+        target = Path(path).expanduser()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid path: {path}") from exc
+
+    resolved = target.resolve(strict=False)
+    is_dir = resolved.is_dir()
+    is_file = resolved.is_file()
+
+    assets = {"symbol": False, "footprint": False, "model": False}
+    counts = {"symbol": 0, "footprint": 0, "model": 0}
+    warnings: List[str] = []
+
+    lower_suffix = resolved.suffix.lower()
+    if is_file and lower_suffix in {".kicad_sym", ".lib"}:
+        symbol_candidates = [resolved]
+        library_root = resolved.with_suffix("")
+    else:
+        symbol_candidates = [resolved.with_suffix(".kicad_sym"), resolved.with_suffix(".lib")]
+        library_root = resolved
+
+    symbol_exists = next((candidate for candidate in symbol_candidates if candidate.is_file()), None)
+    if symbol_exists:
+        assets["symbol"] = True
+        counts["symbol"] = _count_symbols_in_file(symbol_exists)
+
+    footprint_dir = library_root.with_suffix(".pretty")
+    footprint_exists = footprint_dir.is_dir()
+    if footprint_exists:
+        assets["footprint"] = True
+        counts["footprint"] = sum(1 for item in footprint_dir.iterdir() if item.is_file() and item.suffix == ".kicad_mod")
+
+    model_dir = library_root.with_suffix(".3dshapes")
+    model_exists = model_dir.is_dir()
+    if model_exists:
+        assets["model"] = True
+        counts["model"] = sum(1 for item in model_dir.iterdir() if item.is_file() and item.suffix.lower() == ".wrl")
+
+    exists = resolved.exists() or bool(symbol_exists) or footprint_exists or model_exists
+
+    writable = False
+    if symbol_exists:
+        writable = os.access(str(symbol_exists.parent), os.W_OK)
+        if not writable:
+            warnings.append("Bibliotheksdatei kann nicht überschrieben werden.")
+    elif exists and is_dir:
+        writable = os.access(str(resolved), os.W_OK)
+        if not writable:
+            warnings.append("Directory is not writable.")
+    else:
+        parent = resolved.parent
+        if parent.exists():
+            writable = os.access(str(parent), os.W_OK)
+            if not writable:
+                warnings.append("Parent directory is not writable.")
+        else:
+            warnings.append("Parent directory does not exist.")
+
+    return LibraryValidateResponse(
+        resolved_path=str(symbol_exists or resolved),
+        exists=exists,
+        is_dir=is_dir,
+        writable=writable,
+        assets=assets,
+        counts=counts,
+        warnings=warnings,
+    )
+
+
+def _count_symbols_in_file(path: Path) -> int:
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return 1
+
+    matches = re.findall(r"\(\s*symbol\b", content)
+    return len(matches) or 1
+
+
 def _fs_roots() -> List[dict[str, str]]:
     roots: List[dict[str, str]] = []
     seen: set[str] = set()
@@ -186,7 +389,21 @@ def _fs_list_directory(path: str) -> dict[str, Any]:
     entries.sort(key=lambda item: (not item["is_dir"], item["name"].lower()))
 
     parent = str(target.parent) if target.parent != target else None
-    return {"path": str(target), "parent": parent, "entries": entries}
+
+    breadcrumbs: List[dict[str, str]] = []
+    current = target
+    seen: Set[str] = set()
+    while True:
+        label = current.name or current.drive or "/"
+        breadcrumbs.append({"label": label, "path": str(current)})
+        current_str = str(current)
+        if current_str in seen or current == current.parent:
+            break
+        seen.add(current_str)
+        current = current.parent
+    breadcrumbs.reverse()
+
+    return {"path": str(target), "parent": parent, "entries": entries, "breadcrumbs": breadcrumbs}
 
 
 def _fs_check(path: str) -> dict[str, Any]:
@@ -458,6 +675,23 @@ def create_app(
     @router.post("/fs/check")
     async def fs_check(payload: PathRequest) -> Dict[str, Any]:
         return _fs_check(payload.path)
+
+    @router.post(
+        "/libraries/scaffold", response_model=LibraryScaffoldResponse, status_code=status.HTTP_201_CREATED
+    )
+    async def libraries_scaffold(payload: LibraryScaffoldRequest) -> LibraryScaffoldResponse:
+        prefix, created, paths = _scaffold_library(payload)
+        return LibraryScaffoldResponse(
+            resolved_library_prefix=str(prefix),
+            symbol_path=paths.get("symbol"),
+            footprint_dir=paths.get("footprint"),
+            model_dir=paths.get("model"),
+            created=created,
+        )
+
+    @router.post("/libraries/validate", response_model=LibraryValidateResponse)
+    async def libraries_validate(payload: LibraryValidateRequest) -> LibraryValidateResponse:
+        return _inspect_library(payload.path)
 
     @router.get("/tasks/{task_id}", response_model=TaskDetail)
     async def retrieve_task(task: TaskRecord = Depends(get_task)) -> TaskDetail:
