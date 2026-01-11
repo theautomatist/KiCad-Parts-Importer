@@ -796,6 +796,7 @@ function handlePartsSubmit(event) {
     overwrite_model: state.settings.overwriteModel,
     projectRelative: Boolean(activeLibrary?.projectRelative),
     projectRelativePath: activeLibrary?.projectRelativePath || state.settings.projectRelativePath || "",
+    modelPath: activeLibrary?.modelPath || "",
   };
 
   elements.partsSubmit.disabled = true;

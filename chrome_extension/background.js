@@ -159,6 +159,9 @@ function buildLibraryStatus(library, validation) {
   }
 
   const exists = Boolean(validation.exists);
+  const modelPath = typeof validation.model_path === "string" && validation.model_path.trim()
+    ? validation.model_path.trim()
+    : (library.modelPath || "");
   const counts = exists
     ? {
         symbol: Number(validation.counts?.symbol) || (validation.assets?.symbol ? 1 : 0),
@@ -185,6 +188,7 @@ function buildLibraryStatus(library, validation) {
     counts,
     warnings,
     missing: !exists,
+    modelPath,
     active: exists ? library.active : false,
     updatedAt: new Date().toISOString(),
     lastValidation: new Date().toISOString(),
@@ -311,6 +315,9 @@ function normalizeLibraryRecord(raw) {
   const projectRelativePath = normalizeProjectRelativePath(
     raw.projectRelativePath ?? raw.project_relative_path ?? ""
   );
+  const modelPath = typeof raw.modelPath === "string"
+    ? raw.modelPath.trim()
+    : (typeof raw.model_path === "string" ? raw.model_path.trim() : "");
   return {
     id: raw.id || createLibraryId(),
     name,
@@ -331,6 +338,7 @@ function normalizeLibraryRecord(raw) {
     projectId: raw.projectId || "default",
     projectRelative,
     projectRelativePath,
+    modelPath,
     missing: Boolean(raw.missing),
     lastValidation: raw.lastValidation || null,
   };
@@ -759,6 +767,7 @@ async function submitJob(payload) {
     overwrite_model: Boolean(payload.overwrite_model),
     project_relative: Boolean(payload.projectRelative),
     project_relative_path: normalizeProjectRelativePath(payload.projectRelativePath),
+    model_path: typeof payload.modelPath === "string" ? payload.modelPath : "",
   };
 
   const response = await apiFetch("tasks", {
@@ -837,6 +846,7 @@ async function handleCreateLibrary(payload = {}) {
     projectId: payload.projectId || existing?.projectId || "default",
     projectRelative,
     projectRelativePath,
+    modelPath: "",
     missing: false,
     lastValidation: now,
   };
@@ -906,6 +916,7 @@ async function handleImportLibrary(payload = {}) {
     projectId: payload.projectId || existing?.projectId || "default",
     projectRelative,
     projectRelativePath,
+    modelPath: typeof validation.model_path === "string" ? validation.model_path.trim() : "",
     missing: !validation.exists,
     lastValidation: now,
   };
@@ -1068,6 +1079,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               selectedLibrary.projectRelativePath || state.projectRelativePath
             )
           : normalizeProjectRelativePath(state.projectRelativePath);
+        const modelPath = selectedLibrary?.modelPath || "";
 
         const payload = {
           lcscId,
@@ -1080,6 +1092,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           overwrite_model: Boolean(state.overwriteModels),
           projectRelative,
           projectRelativePath,
+          modelPath,
         };
 
         const summary = await submitJob(payload);

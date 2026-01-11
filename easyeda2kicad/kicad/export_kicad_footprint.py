@@ -729,7 +729,12 @@ class ExporterFootprintKicad:
     def get_ki_footprint(self) -> KiFootprint:
         return self.output
 
-    def export(self, footprint_full_path: str, model_3d_path: str) -> None:
+    def export(
+        self,
+        footprint_full_path: str,
+        model_3d_path: str,
+        model_3d_path_is_explicit: bool = False,
+    ) -> None:
         ki = self.output
         ki_lib = ""
 
@@ -786,13 +791,18 @@ class ExporterFootprintKicad:
 
         if ki.model_3d is not None:
             model_base_name = sanitize_model_filename(ki.model_3d.name)
-            model_path = (model_3d_path or "").replace("\\", "/").strip().rstrip("/")
-            if "${KIPRJMOD}" in model_path:
+            model_path = (model_3d_path or "").strip()
+            if model_3d_path_is_explicit:
+                trimmed = model_path.rstrip("/\\")
+                file_3d = f"{trimmed}/{model_base_name}.wrl"
+            else:
+                model_path = model_path.replace("\\", "/").rstrip("/")
+            if not model_3d_path_is_explicit and "${KIPRJMOD}" in model_path:
                 cleaned = model_path.replace("..${KIPRJMOD}", "${KIPRJMOD}")
                 file_3d = f"{cleaned}/{model_base_name}.wrl"
-            elif model_path.startswith("${"):
+            elif not model_3d_path_is_explicit and model_path.startswith("${"):
                 file_3d = f"{model_path}/{model_base_name}.wrl"
-            else:
+            elif not model_3d_path_is_explicit:
                 file_3d = f"..{model_path}/{model_base_name}.wrl"
             ki_lib += KI_MODEL_3D.format(
                 file_3d=file_3d,

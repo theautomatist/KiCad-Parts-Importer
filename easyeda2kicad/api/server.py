@@ -76,6 +76,9 @@ class TaskCreatePayload(BaseModel):
     project_relative_path: Optional[str] = Field(
         None, description="Project-relative 3D model path suffix (prefixed by ${KIPRJMOD})"
     )
+    model_path: Optional[str] = Field(
+        None, description="Explicit 3D model base path to use as-is."
+    )
 
     @field_validator("lcsc_id")
     @classmethod
@@ -153,6 +156,7 @@ class LibraryValidateResponse(BaseModel):
     assets: Dict[str, bool]
     counts: Dict[str, int] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
+    model_path: Optional[str] = None
 
 
 def _normalize_library_prefix(base_path: str, library_name: str) -> Path:
@@ -272,6 +276,7 @@ def _inspect_library(path: str) -> LibraryValidateResponse:
     if footprint_exists:
         assets["footprint"] = True
         counts["footprint"] = sum(1 for item in footprint_dir.iterdir() if item.is_file() and item.suffix == ".kicad_mod")
+    model_path = _extract_model_path(footprint_dir) if footprint_exists else None
 
     model_dir = library_root.with_suffix(".3dshapes")
     model_exists = model_dir.is_dir()
@@ -307,7 +312,32 @@ def _inspect_library(path: str) -> LibraryValidateResponse:
         assets=assets,
         counts=counts,
         warnings=warnings,
+        model_path=model_path,
     )
+
+
+def _extract_model_path(footprint_dir: Path) -> Optional[str]:
+    if not footprint_dir.exists():
+        return None
+    candidates = list(footprint_dir.glob("*.kicad_mod"))
+    for candidate in candidates[:20]:
+        try:
+            content = candidate.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        match = re.search(r'\(model\s+"([^"]+)"', content)
+        if not match:
+            match = re.search(r"\(model\s+([^\s\)]+)", content)
+        if not match:
+            continue
+        model_path = match.group(1).strip()
+        if not model_path:
+            return None
+        last_slash = max(model_path.rfind("/"), model_path.rfind("\\"))
+        if last_slash == -1:
+            return None
+        return model_path[:last_slash]
+    return None
 
 
 def _count_symbols_in_file(path: Path) -> int:
@@ -645,6 +675,7 @@ def create_app(
                 kicad_version=version,
                 project_relative=payload.project_relative,
                 project_relative_path=payload.project_relative_path,
+                model_path=payload.model_path,
             )
         except ConversionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
