@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "easyeda2kicad Companion",
-  "version": "0.1.0",
-  "description": "Steuert den lokalen easyeda2kicad-Service über eine komfortable Browser-Oberfläche.",
+  "version": "1.0.0",
+  "description": "Adds LCSC.com download buttons and uses a local backend to save EasyEDA parts into KiCad libraries.",
   "permissions": [
     "storage",
     "notifications"
@@ -25,5 +25,11 @@
   },
   "action": {
     "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
   }
 }

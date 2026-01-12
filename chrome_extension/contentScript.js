@@ -474,6 +474,19 @@ function attachListButtons() {
 
 async function handleDownloadClick(button, lcscId) {
   dbg("handleDownloadClick", lcscId);
+  try {
+    const status = await sendRuntimeMessage({ type: "getState" }, { retries: 2, delay: 200 });
+    if (!status?.ok || !status.data) {
+      throw new Error(status?.error || "Unable to reach extension backend.");
+    }
+    if (!status.data.connected) {
+      updateButtonState(button, "error", { message: "Backend not reachable. Start the backend." });
+      return;
+    }
+  } catch (error) {
+    updateButtonState(button, "error", { message: error.message || "Backend not reachable." });
+    return;
+  }
   updateButtonState(button, "pending", { progress: 0, message: "Conversion is starting…" });
   try {
     const response = await sendRuntimeMessage(
@@ -546,8 +559,16 @@ async function initialiseButtonState(button, lcscId) {
       button.dataset[INIT_ATTR] = "true";
     }
   } catch (error) {
-    console.warn("checkComponentExists failed", error);
-    updateButtonState(button, "idle");
+    dbg("checkComponentExists failed", error);
+    const message = error?.message || "";
+    if (/backend/i.test(message) || /reach/i.test(message)) {
+      updateButtonState(button, "partial", {
+        message: "Backend offline. Status unknown.",
+        iconType: "download",
+      });
+    } else {
+      updateButtonState(button, "idle");
+    }
     button.dataset[INIT_ATTR] = "true";
   }
 }

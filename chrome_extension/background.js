@@ -5,7 +5,7 @@ const NOTIFICATION_ICON =
 
 const HISTORY_LIMIT = 30;
 const POLL_INTERVAL = 4000;
-const HEALTH_INTERVAL = 15000;
+const HEALTH_INTERVAL = 3000;
 
 const DEFAULT_STATE = {
   serverUrl: "http://localhost:8087",
@@ -79,6 +79,14 @@ function normalizePath(path) {
     return "";
   }
   return path.trim().replace(/[\\\/]+$/, "");
+}
+
+function isBackendOfflineError(error) {
+  const message = (error && error.message) ? error.message : String(error || "");
+  const normalized = message.toLowerCase();
+  return normalized.includes("backend not reachable")
+    || normalized.includes("failed to fetch")
+    || normalized.includes("networkerror");
 }
 
 function stripLibrarySuffix(path) {
@@ -583,6 +591,9 @@ function startHealthMonitor() {
 }
 
 async function syncExistingTasks() {
+  if (!state.connected) {
+    return;
+  }
   try {
     const response = await apiFetch("tasks");
     const tasks = await response.json();
@@ -1013,7 +1024,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           "projectRelative",
           "projectRelativePath",
         ]);
-        await checkHealth();
+        checkHealth();
         return snapshotState();
       case "updateLibraries":
         if (Array.isArray(message.libraries)) {
@@ -1051,6 +1062,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           name: state.selectedLibraryName,
         };
       case "quickDownload": {
+        if (!state.connected) {
+          const connected = await checkHealth();
+          if (!connected) {
+            throw new Error("Backend not reachable. Start the backend.");
+          }
+        }
         const lcscId = (message.lcscId || "").trim().toUpperCase();
         if (!lcscId || !lcscId.startsWith("C")) {
           throw new Error("Ungültige LCSC ID.");
@@ -1127,6 +1144,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         };
       }
       case "checkComponentExists": {
+        if (!state.connected) {
+          const connected = await checkHealth();
+          if (!connected) {
+            throw new Error("Backend not reachable. Start the backend.");
+          }
+        }
         const lcscId = (message.lcscId || "").trim().toUpperCase();
         if (!lcscId || !lcscId.startsWith("C")) {
           throw new Error("Ungültige LCSC ID.");
@@ -1153,37 +1176,48 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const libraryPrefix = normalizePath(
           historyMatch.libraryPath || historyMatch.libraryBasePath || historyMatch.output_path || ""
         );
-        if (libraryPrefix) {
-          try {
-            const validation = await validateLibraryOnServer(libraryPrefix);
-            const index = state.libraries.findIndex(
-              (library) => normalizePath(library.path || library.resolvedPrefix || "") === libraryPrefix
-            );
-            if (index >= 0) {
-              state.libraries[index] = buildLibraryStatus(state.libraries[index], validation);
-              recalcLibraryTotals();
-              await persistState(["libraries", "libraryTotals"]);
-              broadcastState();
-            }
-            if (!validation.exists) {
-              return {
-                inProgress: false,
-                jobId: historyMatch.id,
-                status: historyMatch.status,
-                libraryName: historyMatch.libraryName,
-                libraryPath: historyMatch.libraryPath,
-                completed: false,
-                outputAnalysis: null,
-                partial: false,
-                missing: ["library"],
-                outputs: historyMatch.outputs,
-                result: null,
-                messages: ["Library path is missing on disk."],
-              };
-            }
-          } catch (error) {
-            console.warn("Library validation failed during checkComponentExists", error);
-          }
+        if (!libraryPrefix) {
+          return {
+            inProgress: false,
+            jobId: historyMatch.id,
+            status: historyMatch.status,
+            libraryName: historyMatch.libraryName,
+            libraryPath: historyMatch.libraryPath,
+            completed: false,
+            outputAnalysis: null,
+            partial: false,
+            missing: ["library"],
+            outputs: historyMatch.outputs,
+            result: null,
+            messages: ["Library path is missing on disk."],
+          };
+        }
+
+        const validation = await validateLibraryOnServer(libraryPrefix);
+        const index = state.libraries.findIndex(
+          (library) => normalizePath(library.path || library.resolvedPrefix || "") === libraryPrefix
+        );
+        if (index >= 0) {
+          state.libraries[index] = buildLibraryStatus(state.libraries[index], validation);
+          recalcLibraryTotals();
+          await persistState(["libraries", "libraryTotals"]);
+          broadcastState();
+        }
+        if (!validation.exists) {
+          return {
+            inProgress: false,
+            jobId: historyMatch.id,
+            status: historyMatch.status,
+            libraryName: historyMatch.libraryName,
+            libraryPath: historyMatch.libraryPath,
+            completed: false,
+            outputAnalysis: null,
+            partial: false,
+            missing: ["library"],
+            outputs: historyMatch.outputs,
+            result: null,
+            messages: ["Library path is missing on disk."],
+          };
         }
         const analysis = analyzeJobOutputs(historyMatch);
         return {
@@ -1220,7 +1254,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })()
     .then((result) => sendResponse({ ok: true, data: result }))
     .catch((error) => {
-      console.error("Message handling failed", error);
+      if (state.connected || !isBackendOfflineError(error)) {
+        console.error("Message handling failed", error);
+      } else if (state.debugLogs) {
+        console.warn("Message handling failed (backend offline)", error);
+      }
       sendResponse({ ok: false, error: error.message || String(error) });
     });
   return true;

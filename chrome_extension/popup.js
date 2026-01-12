@@ -191,6 +191,7 @@ async function init() {
   bindEvents();
   toggleLibraryProjectPath();
   toggleSettingsProjectPath();
+  updateBackendControls();
   await loadUiPreferences();
   await hydrate();
   chrome.runtime.onMessage.addListener(handleRuntimeMessage);
@@ -226,7 +227,6 @@ function cacheElements() {
   elements.libraryModal = document.getElementById("library-modal");
   elements.libraryModalTabs = document.getElementById("library-modal-tabs");
   elements.libraryModalSubmit = document.getElementById("library-modal-submit");
-  elements.libraryModalError = document.getElementById("library-modal-error");
   elements.libraryImportForm = document.getElementById("library-import-form");
   elements.libraryImportPath;
   elements.libraryImportInfo = document.getElementById("library-import-info");
@@ -241,6 +241,7 @@ function cacheElements() {
   elements.libraryCreateProject = document.getElementById("library-create-project");
   elements.libraryCreateProjectPathGroup = document.getElementById("library-create-project-path-group");
   elements.libraryCreateProjectPath = document.getElementById("library-create-project-path");
+  elements.pickerButtons = Array.from(document.querySelectorAll("[data-picker]"));
 
   // Settings
   elements.settingsForm = document.getElementById("settings-form");
@@ -252,7 +253,6 @@ function cacheElements() {
   elements.settingsProjectRelative = document.getElementById("settings-project-relative");
   elements.settingsProjectRelativePathGroup = document.getElementById("settings-project-relative-path-group");
   elements.settingsProjectRelativePath = document.getElementById("settings-project-relative-path");
-  elements.settingsFeedback = document.getElementById("settings-feedback");
 
   // Modals shared
   elements.libraryRequiredModal = document.getElementById("library-required-modal");
@@ -273,6 +273,7 @@ function initModals() {
   if (elements.libraryModal) {
     elements.libraryModal.addEventListener("hidden.bs.modal", () => {
       clearLibraryModalError();
+      clearLibraryCreateValidation();
       elements.libraryImportForm?.reset();
       elements.libraryCreateForm?.reset();
       if (elements.libraryCreateProjectPath) {
@@ -309,9 +310,12 @@ function bindEvents() {
     elements.partsLcsc.value = elements.partsLcsc.value.trim().toUpperCase();
   });
 
-  const pickerButtons = document.querySelectorAll("[data-picker]");
-  pickerButtons.forEach((button) => {
+  elements.pickerButtons.forEach((button) => {
     button.addEventListener("click", () => {
+      if (!state.connected) {
+        showToast("Not available without backend.", "warning");
+        return;
+      }
       const mode = button.dataset.picker;
       openDirectoryPicker({
         mode,
@@ -323,6 +327,7 @@ function bindEvents() {
 			submitImportLibrary();
           } else {
             elements.libraryCreatePath.value = selectedPath;
+            elements.libraryCreatePath.classList.remove("is-invalid");
           }
         },
       });
@@ -345,6 +350,11 @@ function bindEvents() {
   });
   elements.libraryModalSubmit?.addEventListener("click", submitCreateLibrary);
   elements.libraryCreateProject?.addEventListener("change", toggleLibraryProjectPath);
+  elements.libraryCreateName?.addEventListener("input", () => {
+    if (elements.libraryCreateName.value.trim()) {
+      elements.libraryCreateName.classList.remove("is-invalid");
+    }
+  });
 
   elements.libraryList?.addEventListener("change", handleLibraryListChange);
   elements.libraryList?.addEventListener("click", handleLibraryListClick);
@@ -492,6 +502,7 @@ function applyState(snapshot = {}) {
   renderPartsResult();
   renderSettings();
   syncLibraryCreateDefaults();
+  updateBackendControls();
 
   state.ready = true;
 }
@@ -500,6 +511,21 @@ function renderConnectionStatus() {
   if (!elements.connectionStatus) return;
   elements.connectionStatusDot.classList.toggle("badge-online", state.connected);
   elements.connectionStatusDot.classList.toggle("badge-offline", !state.connected);
+}
+
+function updateBackendControls() {
+  if (!elements.pickerButtons?.length) return;
+  const disabled = !state.connected;
+  elements.pickerButtons.forEach((button) => {
+    button.disabled = disabled;
+    if (disabled) {
+      button.setAttribute("title", "Not available without backend.");
+      button.setAttribute("aria-disabled", "true");
+    } else {
+      button.removeAttribute("title");
+      button.setAttribute("aria-disabled", "false");
+    }
+  });
 }
 
 function renderPartsDefaults() {
@@ -924,9 +950,19 @@ function submitImportLibrary() {
 
 function submitCreateLibrary() {
   clearLibraryModalError();
+  clearLibraryCreateValidation();
   const name = elements.libraryCreateName.value.trim();
   const basePath = elements.libraryCreatePath.value.trim();
-  if (!name || !basePath) {
+  let hasError = false;
+  if (!name) {
+    elements.libraryCreateName.classList.add("is-invalid");
+    hasError = true;
+  }
+  if (!basePath) {
+    elements.libraryCreatePath.classList.add("is-invalid");
+    hasError = true;
+  }
+  if (hasError) {
     setLibraryModalError("Name and base folder are required.");
     return;
   }
@@ -1059,22 +1095,33 @@ function setPartsFeedback(message, variant) {
 }
 
 function setSettingsFeedback(message, cls) {
-  if (!elements.settingsFeedback) return;
-  elements.settingsFeedback.className = `card-footer small ${cls}`.trim();
-  elements.settingsFeedback.textContent = message;
-  elements.settingsFeedback.classList.toggle("d-none", !message);
+  if (!message) return;
+  let variant = "primary";
+  let delay = 4000;
+  if (cls === "text-danger") {
+    variant = "danger";
+  } else if (cls === "text-success") {
+    variant = "success";
+    delay = 1000;
+  } else if (cls === "text-muted") {
+    variant = "secondary";
+    delay = 1500;
+  }
+  showToast(message, variant, delay);
 }
 
 function clearLibraryModalError() {
-  if (!elements.libraryModalError) return;
-  elements.libraryModalError.textContent = "";
-  elements.libraryModalError.classList.remove("text-danger");
+  return;
+}
+
+function clearLibraryCreateValidation() {
+  elements.libraryCreateName?.classList.remove("is-invalid");
+  elements.libraryCreatePath?.classList.remove("is-invalid");
 }
 
 function setLibraryModalError(message) {
-  if (!elements.libraryModalError) return;
-  elements.libraryModalError.textContent = message;
-  elements.libraryModalError.classList.add("text-danger");
+  if (!message) return;
+  showToast(message, "danger");
 }
 
 function setLibraryModalTab(mode) {
@@ -1129,6 +1176,10 @@ function validateImportPath(path) {
 }
 
 function openDirectoryPicker({ mode, onSelect, applyLabel, initialPath }) {
+  if (!state.connected) {
+    showToast("Not available without backend.", "warning");
+    return;
+  }
   state.picker.mode = mode;
   state.picker.callback = onSelect;
   state.picker.selectedPath = "";
@@ -1472,7 +1523,7 @@ function sendMessage(type, payload = {}) {
     });
 }
 
-function showToast(message, variant = "primary") {
+function showToast(message, variant = "primary", delay = 4000) {
   if (!elements.toastContainer) return;
   const toastElement = document.createElement("div");
   toastElement.className = `toast align-items-center text-bg-${variant}`;
@@ -1486,7 +1537,7 @@ function showToast(message, variant = "primary") {
     </div>
   `;
   elements.toastContainer.appendChild(toastElement);
-  const toast = new bootstrap.Toast(toastElement, { delay: 4000 });
+  const toast = new bootstrap.Toast(toastElement, { delay });
   toast.show();
   toastElement.addEventListener("hidden.bs.toast", () => {
     toastElement.remove();
