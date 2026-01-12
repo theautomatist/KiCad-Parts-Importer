@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "easyeda2kicad Companion",
+  "name": "LCSC2KiCad",
   "version": "1.0.0",
-  "description": "Adds LCSC.com download buttons and uses a local backend to save EasyEDA parts into KiCad libraries.",
+  "description": "Adds LCSC download buttons and uses a local backend to save EasyEDA parts as KiCad libraries.",
   "permissions": [
     "storage",
     "notifications"
