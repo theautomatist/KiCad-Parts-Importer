@@ -26,7 +26,10 @@ flowchart LR
 1. Install the extension:
    - Chrome Web Store: [KiCadPartsImporter](https://chromewebstore.google.com/detail/ojkpgmndjlkghmaccanfophkcngdkpmi)
    - Or load locally: open `chrome://extensions`, enable Developer mode, click "Load unpacked", select `chrome_extension/`.
-2. Download the backend package from the Releases page and start it.
+2. Download the backend from the [Releases](https://github.com/theautomatist/LCSC2KiCad/releases) page and start it:
+   - macOS/Linux: `chmod +x ./<version>-KiCadPartsImporter-<OS>` then `./<version>-KiCadPartsImporter-<OS>`
+   - macOS Gatekeeper: `xattr -dr com.apple.quarantine ./<version>-KiCadPartsImporter-Mac`
+   - Windows: run `<version>-KiCadPartsImporter-Windows.exe`
 3. Browse `https://www.lcsc.com/` and use the extension to export components.
 
 ## UI and LCSC Website Integration
@@ -65,19 +68,9 @@ flowchart LR
 - `easyeda2kicad/service/`: Conversion orchestration.
 - `tests/`: API and conversion tests.
 
-## Configuration
-- Backend host/port are controlled by `HOST` and `PORT` or `run_server.py` args.
-- The extension expects the backend at `http://localhost:8087`. If you change the port, update `chrome_extension/manifest.json`.
-
 > [!NOTE]
 > This repo includes fixes for several EasyEDA conversion edge cases and improves overall stability when exporting libraries.
 
-## Development notes
-- Run tests:
-  ```bash
-  python -m unittest discover -s tests
-  ```
-- Code style: Black (88), isort, flake8, pycln, bandit, and Prettier for JS/CSS/HTML.
 
 ## Credits
 This project builds on the original [easyeda2kicad](https://github.com/uPesy/easyeda2kicad.py) work by uPesy
